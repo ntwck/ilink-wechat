@@ -18,6 +18,9 @@ import { downloadMediaFromItem } from "../media/media-download.js";
 import { logger } from "../util/logger.js";
 import { redactBody, redactToken } from "../util/redact.js";
 
+import { callCustomBot } from "../bot/custom-provider.js";
+import type { CustomBotServiceConfig } from "../bot/custom-provider.js";
+
 import { isDebugMode } from "./debug-mode.js";
 import { sendWeixinErrorNotice } from "./error-notice.js";
 import {
@@ -33,6 +36,17 @@ import { sendMessageWeixin } from "./send.js";
 import { handleSlashCommand } from "./slash-commands.js";
 
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
+
+/** Max character length for error messages forwarded to the user. */
+const MAX_ERROR_MSG_LENGTH = 200;
+
+/** Extended channel config type that includes the optional bot config block. */
+type WeixinChannelCfgWithBot = {
+  bot?: {
+    provider?: "openclaw" | "custom";
+    service?: CustomBotServiceConfig;
+  };
+};
 
 /** Dependencies for processOneMessage, injected by the monitor loop. */
 export type ProcessMessageDeps = {
@@ -211,6 +225,108 @@ export async function processOneMessage(
       `│ auth: cmdAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
     );
   }
+
+  // ---------------------------------------------------------------------------
+  // Custom bot provider path (non-openclaw)
+  // ---------------------------------------------------------------------------
+  // OpenClawConfig.channels is typed as Record<string, unknown>; cast to access our extended bot config.
+  const weixinChannelCfg = deps.config.channels?.["openclaw-weixin"] as
+    | WeixinChannelCfgWithBot
+    | undefined;
+  const botProvider = weixinChannelCfg?.bot?.provider ?? "openclaw";
+
+  if (botProvider === "custom") {
+    const serviceConfig = weixinChannelCfg?.bot?.service;
+    const contextToken = full.context_token;
+
+    // Persist context token so outbound channel delivery can echo it back.
+    if (contextToken) {
+      setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
+    }
+
+    if (!serviceConfig?.baseUrl) {
+      logger.error(
+        `processOneMessage: custom bot provider selected but bot.service.baseUrl not configured accountId=${deps.accountId}`,
+      );
+      void sendWeixinErrorNotice({
+        to: ctx.To,
+        contextToken,
+        message: "⚠️ 自定义服务未配置，请在 openclaw.json 中设置 channels.openclaw-weixin.bot.service.baseUrl。",
+        baseUrl: deps.baseUrl,
+        token: deps.token,
+        errLog: deps.errLog,
+      });
+      return;
+    }
+
+    // Start typing indicator if we have a typing ticket.
+    const hasTypingTicket = Boolean(deps.typingTicket);
+    const startTyping = hasTypingTicket
+      ? () =>
+          sendTyping({
+            baseUrl: deps.baseUrl,
+            token: deps.token,
+            body: {
+              ilink_user_id: ctx.To,
+              typing_ticket: deps.typingTicket!,
+              status: TypingStatus.TYPING,
+            },
+          })
+      : () => Promise.resolve();
+    const stopTyping = hasTypingTicket
+      ? () =>
+          sendTyping({
+            baseUrl: deps.baseUrl,
+            token: deps.token,
+            body: {
+              ilink_user_id: ctx.To,
+              typing_ticket: deps.typingTicket!,
+              status: TypingStatus.CANCEL,
+            },
+          })
+      : () => Promise.resolve();
+
+    await startTyping().catch((e: unknown) =>
+      deps.log(`[weixin] custom bot: typing start error: ${String(e)}`),
+    );
+
+    try {
+      const replyText = await callCustomBot({
+        userId: full.from_user_id ?? "",
+        accountId: deps.accountId,
+        text: ctx.Body ?? "",
+        config: serviceConfig,
+      });
+      await stopTyping().catch((e: unknown) =>
+        deps.log(`[weixin] custom bot: typing stop error: ${String(e)}`),
+      );
+      await sendMessageWeixin({
+        to: ctx.To,
+        text: replyText,
+        opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken },
+      });
+      logger.info(`custom bot: reply sent to=${ctx.To} replyLen=${replyText.length}`);
+    } catch (err) {
+      await stopTyping().catch(() => {});
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.error(
+        `custom bot: failed accountId=${deps.accountId} to=${ctx.To} err=${errMsg}`,
+      );
+      void sendWeixinErrorNotice({
+        to: ctx.To,
+        contextToken,
+        message: `⚠️ 服务调用失败：${errMsg.slice(0, MAX_ERROR_MSG_LENGTH)}`,
+        baseUrl: deps.baseUrl,
+        token: deps.token,
+        errLog: deps.errLog,
+      });
+    }
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // OpenClaw LLM path (default)
+  // ---------------------------------------------------------------------------
 
   const route = deps.channelRuntime.routing.resolveAgentRoute({
     cfg: deps.config,

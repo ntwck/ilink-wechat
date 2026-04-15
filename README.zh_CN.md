@@ -279,7 +279,100 @@ openclaw config set session.dmScope per-account-channel-peer
 
 > 完整的类型定义见 [`src/api/types.ts`](src/api/types.ts)，API 调用实现见 [`src/api/api.ts`](src/api/api.ts)。
 
-## 卸载
+## 自定义 Bot 服务（不依赖 OpenClaw LLM）
+
+插件默认将消息路由到 OpenClaw 内置的 LLM 流水线。如需将微信作为**个人机器人**接入自己的 AI 服务，可切换至 `custom` provider 模式：微信通信层（登录、收发消息、CDN 媒体、typing 指示器）保持不变，只将"生成回复"替换为你的服务。
+
+### 支持的服务
+
+任何实现了 [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat/create)（`POST /v1/chat/completions`）的服务均可接入，例如：
+
+| 服务 | baseUrl 示例 |
+|------|-------------|
+| OpenAI | `https://api.openai.com` |
+| Azure OpenAI (兼容端点) | `https://<resource>.openai.azure.com/openai/deployments/<deploy>` |
+| Ollama（本地） | `http://localhost:11434` |
+| LM Studio（本地） | `http://localhost:1234` |
+| 任何 OpenAI-compatible 代理 | 填入你的代理 URL |
+
+### 配置示例
+
+编辑 `~/.openclaw/openclaw.json`，在 `channels.openclaw-weixin` 节点下添加 `bot` 配置：
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "bot": {
+        "provider": "custom",
+        "service": {
+          "baseUrl": "https://api.openai.com",
+          "apiKey": "sk-xxxxxxxxxxxxxxxx",
+          "model": "gpt-4o",
+          "systemPrompt": "你是一个有用的助手。",
+          "maxHistory": 20,
+          "timeoutMs": 60000
+        }
+      }
+    }
+  }
+}
+```
+
+**本地 Ollama 示例：**
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "bot": {
+        "provider": "custom",
+        "service": {
+          "baseUrl": "http://localhost:11434",
+          "model": "llama3",
+          "systemPrompt": "你是一个有用的中文助手。",
+          "maxHistory": 10
+        }
+      }
+    }
+  }
+}
+```
+
+### 配置字段说明
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `bot.provider` | `"openclaw" \| "custom"` | `"openclaw"` | 回复引擎；`"custom"` 启用自定义服务 |
+| `bot.service.baseUrl` | `string` | — | **必填**。服务 base URL（不含路径） |
+| `bot.service.apiKey` | `string` | — | API 密钥，放入 `Authorization: Bearer` 头 |
+| `bot.service.model` | `string` | `"gpt-3.5-turbo"` | 模型名称 |
+| `bot.service.systemPrompt` | `string` | — | 系统提示词（每轮都会附加在 messages 头部） |
+| `bot.service.maxHistory` | `number` | `20` | 保留的最大对话轮数（user+assistant 各算一条） |
+| `bot.service.timeoutMs` | `number` | `60000` | HTTP 请求超时（毫秒） |
+
+### 对话历史管理
+
+对话历史保存在内存中，按微信账号 + 用户 ID 独立维护，网关重启后重置。发送 `/reset` 指令可清除当前用户的对话历史，开始新对话。
+
+### 回滚到 OpenClaw 模式
+
+将 `bot.provider` 改回 `"openclaw"`（或直接删除 `bot` 配置块），重启 gateway 即可：
+
+```bash
+openclaw config set channels.openclaw-weixin.bot.provider openclaw
+openclaw gateway restart
+```
+
+### 斜杠指令
+
+| 指令 | 说明 |
+|------|------|
+| `/echo <text>` | 回显消息，附带通道耗时统计 |
+| `/toggle-debug` | 开关 debug 模式（每条回复追加全链路耗时） |
+| `/reset` | 清除当前用户的自定义 Bot 对话历史 |
+
+
 
 ```bash
 openclaw plugins uninstall @tencent-weixin/openclaw-weixin
