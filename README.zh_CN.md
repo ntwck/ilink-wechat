@@ -336,7 +336,7 @@ openclaw gateway restart
 | `type` | `"openclaw"` \| `"rest"` \| `"ws"` | `"openclaw"` | 回复来源。`openclaw` = 使用内置 AI 管道（默认）；`rest` = 调用 HTTP 接口；`ws` = 调用 WebSocket 接口。 |
 | `endpoint` | `string` | — | 你的服务地址（`rest`/`ws` 必填）。 |
 | `authHeader` | `string` | `"Authorization"` | 鉴权 header 名称（仅 `rest`）。 |
-| `authToken` | `string` | — | 鉴权 token，发送到 `authHeader` 或 WebSocket 握手头。 |
+| `authToken` | `string` | — | 鉴权 token。REST 模式：发送到 `authHeader`；WebSocket 模式：包含在消息载荷的 `authToken` 字段中，或嵌入 URL（如 `ws://host/ws?token=xxx`，见下方说明）。 |
 | `timeoutMs` | `number` | `30000` | 单次请求超时（毫秒）。超时后返回 `fallbackMessage`。 |
 | `fallbackMessage` | `string` | `"⚠️ 服务暂时不可用，请稍后再试。"` | 外部服务不可达或返回空时发送给用户的提示。 |
 | `requestFormat` | `"simple"` \| `"openai"` | `"simple"` | 请求体格式（仅 `rest`）。 |
@@ -402,10 +402,15 @@ openclaw gateway restart
   "body": "<消息文本>",
   "contextToken": "<会话上下文令牌>",
   "accountId": "<机器人账号 ID>",
+  "authToken": "<鉴权 token>",
   "mediaPath": "/tmp/decrypted-image.jpg",
   "mediaType": "image/*"
 }
 ```
+
+> **WebSocket 鉴权说明**：Node.js 22 内置的 `WebSocket` 不支持在构造函数中设置自定义 HTTP 头（如 `Authorization`）。鉴权有两种方式：
+> 1. **URL 参数**（推荐）：将 token 嵌入 endpoint，如 `"ws://localhost:8080/ws?token=your-secret-token"`。
+> 2. **消息载荷**：配置 `authToken` 后，插件会将其附加在每条发送帧的 `authToken` 字段中，由服务端校验。
 
 **接收帧：**
 
@@ -432,13 +437,14 @@ openclaw gateway restart
 
 ```python
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 app = FastAPI()
 
 class ChatRequest(BaseModel):
-    from_: str = ""  # WeChat user ID
+    # 'from' is a Python keyword; use an alias to map the JSON field name
+    from_user: str = Field("", alias="from")
     body: str
     contextToken: Optional[str] = None
     accountId: Optional[str] = None
@@ -447,7 +453,6 @@ class ChatRequest(BaseModel):
 
     class Config:
         populate_by_name = True
-        fields = {"from_": "from"}
 
 @app.post("/chat")
 async def chat(req: ChatRequest, authorization: str = Header(default="")):
