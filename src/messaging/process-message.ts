@@ -15,6 +15,7 @@ import { loadWeixinAccount } from "../auth/accounts.js";
 import { readFrameworkAllowFromList } from "../auth/pairing.js";
 import { downloadRemoteImageToTemp } from "../cdn/upload.js";
 import { downloadMediaFromItem } from "../media/media-download.js";
+import type { ReplyProvider } from "../providers/types.js";
 import { logger } from "../util/logger.js";
 import { redactBody, redactToken } from "../util/redact.js";
 
@@ -45,6 +46,12 @@ export type ProcessMessageDeps = {
   typingTicket?: string;
   log: (msg: string) => void;
   errLog: (m: string) => void;
+  /**
+   * When set, the external provider is used to generate replies instead of the
+   * default OpenClaw agent pipeline (dispatchReplyFromConfig).
+   * Configure via channels.openclaw-weixin.provider in openclaw.json.
+   */
+  replyProvider?: ReplyProvider;
 };
 
 /** Extract text body from item_list (for slash command detection). */
@@ -56,6 +63,140 @@ function extractTextBody(itemList?: import("../api/types.js").MessageItem[]): st
     }
   }
   return "";
+}
+
+// ---------------------------------------------------------------------------
+// External provider dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * Dispatch a reply via an external REST or WebSocket provider.
+ * Called instead of the OpenClaw dispatchReplyFromConfig path when
+ * deps.replyProvider is set.
+ */
+async function dispatchWithExternalProvider(
+  full: WeixinMessage,
+  deps: ProcessMessageDeps,
+  mediaOpts: WeixinInboundMediaOpts,
+  contextToken: string | undefined,
+): Promise<void> {
+  if (!deps.replyProvider) return;
+
+  const to = full.from_user_id ?? "";
+  const body = full.item_list ? extractTextBody(full.item_list) : "";
+
+  logger.info(
+    `[external-provider] dispatch: provider=${deps.replyProvider.type} to=${to} bodyLen=${body.length} hasMedia=${Boolean(mediaOpts.decryptedPicPath ?? mediaOpts.decryptedVideoPath ?? mediaOpts.decryptedFilePath ?? mediaOpts.decryptedVoicePath)}`,
+  );
+
+  // Determine the local media path (first available type, same priority as inbound)
+  const mediaPath =
+    mediaOpts.decryptedPicPath ??
+    mediaOpts.decryptedVideoPath ??
+    mediaOpts.decryptedFilePath ??
+    mediaOpts.decryptedVoicePath;
+  const mediaType = mediaOpts.decryptedPicPath
+    ? "image/*"
+    : mediaOpts.decryptedVideoPath
+      ? "video/mp4"
+      : mediaOpts.decryptedFilePath
+        ? (mediaOpts.fileMediaType ?? "application/octet-stream")
+        : mediaOpts.decryptedVoicePath
+          ? (mediaOpts.voiceMediaType ?? "audio/wav")
+          : undefined;
+
+  // Start typing indicator (fire-and-forget)
+  if (deps.typingTicket) {
+    sendTyping({
+      baseUrl: deps.baseUrl,
+      token: deps.token,
+      body: { ilink_user_id: to, typing_ticket: deps.typingTicket, status: TypingStatus.TYPING },
+    }).catch((err: unknown) => deps.log(`[weixin] typing start error: ${String(err)}`));
+  }
+
+  let response: import("../providers/types.js").ExternalReplyResponse;
+  try {
+    response = await deps.replyProvider.generateReply({
+      from: to,
+      body,
+      contextToken,
+      mediaPath,
+      mediaType,
+      accountId: deps.accountId,
+    });
+  } catch (err) {
+    logger.error(`[external-provider] generateReply threw: ${String(err)}`);
+    response = { text: "⚠️ 消息处理失败，请稍后再试。" };
+  } finally {
+    // Stop typing indicator (fire-and-forget)
+    if (deps.typingTicket) {
+      sendTyping({
+        baseUrl: deps.baseUrl,
+        token: deps.token,
+        body: { ilink_user_id: to, typing_ticket: deps.typingTicket, status: TypingStatus.CANCEL },
+      }).catch((err: unknown) => deps.log(`[weixin] typing stop error: ${String(err)}`));
+    }
+  }
+
+  const replyText = response.text?.trim() ?? "";
+  const replyMediaUrl = response.mediaUrl?.trim() ?? "";
+
+  if (!replyText && !replyMediaUrl) {
+    logger.info(`[external-provider] provider returned empty reply, nothing to send`);
+    return;
+  }
+
+  // Apply markdown filter (same as OpenClaw path)
+  const filteredText = (() => {
+    const f = new StreamingMarkdownFilter();
+    return f.feed(replyText) + f.flush();
+  })();
+
+  const sendOpts = { baseUrl: deps.baseUrl, token: deps.token, contextToken };
+
+  try {
+    if (replyMediaUrl) {
+      let filePath: string;
+      if (!replyMediaUrl.includes("://") || replyMediaUrl.startsWith("file://")) {
+        filePath = replyMediaUrl.startsWith("file://")
+          ? new URL(replyMediaUrl).pathname
+          : !path.isAbsolute(replyMediaUrl)
+            ? path.resolve(replyMediaUrl)
+            : replyMediaUrl;
+        logger.debug(`[external-provider] outbound local file=${filePath}`);
+      } else if (replyMediaUrl.startsWith("http://") || replyMediaUrl.startsWith("https://")) {
+        logger.debug(`[external-provider] downloading remote mediaUrl=${replyMediaUrl.slice(0, 80)}`);
+        filePath = await downloadRemoteImageToTemp(replyMediaUrl, MEDIA_OUTBOUND_TEMP_DIR);
+        logger.debug(`[external-provider] remote image downloaded to ${filePath}`);
+      } else {
+        logger.warn(`[external-provider] unrecognised mediaUrl scheme, falling back to text-only`);
+        await sendMessageWeixin({ to, text: filteredText, opts: sendOpts });
+        return;
+      }
+      await sendWeixinMediaFile({
+        filePath,
+        to,
+        text: filteredText,
+        opts: sendOpts,
+        cdnBaseUrl: deps.cdnBaseUrl,
+      });
+      logger.info(`[external-provider] media sent OK to=${to}`);
+    } else {
+      await sendMessageWeixin({ to, text: filteredText, opts: sendOpts });
+      logger.info(`[external-provider] text sent OK to=${to}`);
+    }
+  } catch (err) {
+    logger.error(`[external-provider] send FAILED to=${to} err=${String(err)}`);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await sendWeixinErrorNotice({
+      to,
+      contextToken,
+      message: `⚠️ 消息发送失败：${errMsg}`,
+      baseUrl: deps.baseUrl,
+      token: deps.token,
+      errLog: deps.errLog,
+    });
+  }
 }
 
 /**
@@ -205,6 +346,50 @@ export async function processOneMessage(
     `authorization: senderId=${senderId} commandAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
   );
 
+  // Always persist the context token regardless of dispatch path
+  const contextToken = getContextTokenFromMsgContext(ctx);
+  if (contextToken) {
+    setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
+  }
+
+  // -------------------------------------------------------------------------
+  // External provider path — bypasses OpenClaw route/session/dispatch
+  // -------------------------------------------------------------------------
+  if (deps.replyProvider) {
+    if (debug) {
+      debugTrace.push(
+        "── 鉴权 & 路由 ──",
+        `│ auth: cmdAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
+        `│ route: external provider=${deps.replyProvider.type}`,
+      );
+    }
+    await dispatchWithExternalProvider(full, deps, mediaOpts, contextToken);
+    if (debug && contextToken) {
+      const dispatchDoneAt = Date.now();
+      const eventTs = full.create_time_ms ?? 0;
+      debugTrace.push(
+        "── 耗时 ──",
+        `├ 平台→插件: ${eventTs > 0 ? `${receivedAt - eventTs}ms` : "N/A"}`,
+        `├ 总耗时: ${eventTs > 0 ? `${dispatchDoneAt - eventTs}ms` : `${dispatchDoneAt - receivedAt}ms`}`,
+        `└ provider: ${deps.replyProvider.type}`,
+      );
+      try {
+        await sendMessageWeixin({
+          to: full.from_user_id ?? "",
+          text: `⏱ Debug 全链路\n${debugTrace.join("\n")}`,
+          opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken },
+        });
+      } catch (debugErr) {
+        logger.error(`debug-timing: send FAILED err=${String(debugErr)}`);
+      }
+    }
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // OpenClaw dispatch path (default)
+  // -------------------------------------------------------------------------
+
   if (debug) {
     debugTrace.push(
       "── 鉴权 & 路由 ──",
@@ -265,10 +450,8 @@ export async function processOneMessage(
     `recordInboundSession: done storePath=${storePath} sessionKey=${route.sessionKey ?? "(none)"}`,
   );
 
-  const contextToken = getContextTokenFromMsgContext(ctx);
-  if (contextToken) {
-    setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
-  }
+  // contextToken was already obtained and persisted above, before the provider branch.
+  // Re-use it here for the OpenClaw path without re-declaring.
   const humanDelay = deps.channelRuntime.reply.resolveHumanDelayConfig(deps.config, route.agentId);
 
   const hasTypingTicket = Boolean(deps.typingTicket);

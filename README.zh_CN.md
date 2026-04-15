@@ -279,6 +279,183 @@ openclaw config set session.dmScope per-account-channel-peer
 
 > 完整的类型定义见 [`src/api/types.ts`](src/api/types.ts)，API 调用实现见 [`src/api/api.ts`](src/api/api.ts)。
 
+## 个人机器人模式（不依赖 LLM）
+
+默认情况下，插件将消息转发给 OpenClaw 的 AI 管道（LLM + Tools）处理。如果你希望用自己的后端服务来生成回复，可以通过在 `openclaw.json` 中配置 `provider` 字段来接入。
+
+### 快速配置
+
+编辑 `~/.openclaw/openclaw.json`，在 `channels.openclaw-weixin` 下添加 `provider`：
+
+**使用 REST 接口：**
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "provider": {
+        "type": "rest",
+        "endpoint": "http://localhost:8080/chat",
+        "authToken": "your-secret-token",
+        "timeoutMs": 30000,
+        "fallbackMessage": "⚠️ 服务暂时不可用，请稍后再试。"
+      }
+    }
+  }
+}
+```
+
+**使用 WebSocket 接口：**
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "provider": {
+        "type": "ws",
+        "endpoint": "ws://localhost:8080/ws",
+        "authToken": "your-secret-token",
+        "timeoutMs": 30000,
+        "fallbackMessage": "⚠️ 服务暂时不可用，请稍后再试。"
+      }
+    }
+  }
+}
+```
+
+修改配置后重启 gateway 使配置生效：
+
+```bash
+openclaw gateway restart
+```
+
+### provider 配置字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `type` | `"openclaw"` \| `"rest"` \| `"ws"` | `"openclaw"` | 回复来源。`openclaw` = 使用内置 AI 管道（默认）；`rest` = 调用 HTTP 接口；`ws` = 调用 WebSocket 接口。 |
+| `endpoint` | `string` | — | 你的服务地址（`rest`/`ws` 必填）。 |
+| `authHeader` | `string` | `"Authorization"` | 鉴权 header 名称（仅 `rest`）。 |
+| `authToken` | `string` | — | 鉴权 token，发送到 `authHeader` 或 WebSocket 握手头。 |
+| `timeoutMs` | `number` | `30000` | 单次请求超时（毫秒）。超时后返回 `fallbackMessage`。 |
+| `fallbackMessage` | `string` | `"⚠️ 服务暂时不可用，请稍后再试。"` | 外部服务不可达或返回空时发送给用户的提示。 |
+| `requestFormat` | `"simple"` \| `"openai"` | `"simple"` | 请求体格式（仅 `rest`）。 |
+
+### REST 接口协议（type = "rest"）
+
+#### requestFormat = "simple"（默认）
+
+**请求体（POST JSON）：**
+
+```json
+{
+  "from": "<用户 WeChat ID>",
+  "body": "<消息文本>",
+  "contextToken": "<会话上下文令牌>",
+  "accountId": "<机器人账号 ID>",
+  "mediaPath": "/tmp/decrypted-image.jpg",
+  "mediaType": "image/*"
+}
+```
+
+> `mediaPath` 和 `mediaType` 仅在消息包含图片/语音/文件/视频时才出现。
+
+**响应体（JSON 或纯文本）：**
+
+```json
+{
+  "reply": "你好，这是我的回复",
+  "mediaUrl": "https://example.com/image.png"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `reply` / `text` / `content` | `string` | 回复文本（三选一均可识别）。 |
+| `mediaUrl` | `string?` | 可选。回复中的图片/文件链接（`https://` URL 或本地绝对路径）。 |
+
+也支持直接返回纯文本字符串作为响应体。
+
+#### requestFormat = "openai"
+
+请求体遵循 [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat) 格式，兼容任何 OpenAI-compatible 接口（如 Ollama、vLLM、LocalAI 等）：
+
+```json
+{
+  "model": "gpt-3.5-turbo",
+  "messages": [{ "role": "user", "content": "<消息文本>" }]
+}
+```
+
+响应体按 OpenAI 格式解析 `choices[0].message.content`。
+
+### WebSocket 接口协议（type = "ws"）
+
+每条消息建立一次 WebSocket 连接。连接建立后发送一个 JSON 帧，等待一个回复帧，然后关闭连接。
+
+**发送帧：**
+
+```json
+{
+  "type": "message",
+  "from": "<用户 WeChat ID>",
+  "body": "<消息文本>",
+  "contextToken": "<会话上下文令牌>",
+  "accountId": "<机器人账号 ID>",
+  "mediaPath": "/tmp/decrypted-image.jpg",
+  "mediaType": "image/*"
+}
+```
+
+**接收帧：**
+
+```json
+{ "type": "reply", "text": "你好，这是我的回复" }
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `text` / `reply` / `content` | `string` | 回复文本（三选一均可识别）。 |
+
+也支持直接返回纯文本帧。
+
+> **提示**：插件使用 Node.js 22 内置的全局 `WebSocket`（无需额外安装 `ws` 包）。
+
+### 与 OpenClaw 的关系
+
+- 微信登录、消息收发（`getUpdates` / `sendMessage`）、CDN 媒体上传下载、typing 状态指示等均保持不变，依旧通过 OpenClaw 的微信后端通信。
+- 仅"生成回复"这一步被替换为你自己的服务。
+- 斜杠指令（`/echo`、`/toggle-debug`）在 `rest`/`ws` 模式下同样有效，不经过外部服务。
+- 鉴权（allowFrom 配对）机制不变：如果已配置 allowFrom，仅授权用户的消息才会转发给外部服务。
+
+### 示例：Python FastAPI 机器人
+
+```python
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+
+app = FastAPI()
+
+class ChatRequest(BaseModel):
+    from_: str = ""  # WeChat user ID
+    body: str
+    contextToken: Optional[str] = None
+    accountId: Optional[str] = None
+    mediaPath: Optional[str] = None
+    mediaType: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        fields = {"from_": "from"}
+
+@app.post("/chat")
+async def chat(req: ChatRequest, authorization: str = Header(default="")):
+    # 在这里接入你自己的逻辑（RAG、规则引擎、其他 LLM 等）
+    reply = f"你说了：{req.body}"
+    return {"reply": reply}
+```
+
 ## 卸载
 
 ```bash
