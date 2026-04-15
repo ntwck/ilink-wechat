@@ -309,4 +309,3 @@ Ensure `plugins.entries.openclaw-weixin.enabled` is `true` in `~/.openclaw/openc
 ```bash
 openclaw config set plugins.entries.openclaw-weixin.enabled true
 openclaw gateway restart
-```
