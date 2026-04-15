@@ -280,7 +280,100 @@ All media types (image/voice/file/video) are transferred via CDN using AES-128-E
 
 > For complete type definitions, see [`src/api/types.ts`](src/api/types.ts). For API call implementations, see [`src/api/api.ts`](src/api/api.ts).
 
-## Uninstall
+## Custom Bot Service (Without OpenClaw LLM)
+
+By default, the plugin routes messages through the OpenClaw built-in LLM pipeline. To use WeChat as a **personal robot** backed by your own AI service, switch to `custom` provider mode. The WeChat communication layer (login, messaging, CDN media, typing indicators) stays unchanged — only the "generate reply" step is replaced.
+
+### Supported Services
+
+Any service implementing the [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat/create) (`POST /v1/chat/completions`) is supported:
+
+| Service | baseUrl Example |
+|---------|----------------|
+| OpenAI | `https://api.openai.com` |
+| Azure OpenAI (compatible endpoint) | `https://<resource>.openai.azure.com/openai/deployments/<deploy>` |
+| Ollama (local) | `http://localhost:11434` |
+| LM Studio (local) | `http://localhost:1234` |
+| Any OpenAI-compatible proxy | Your proxy URL |
+
+### Configuration Example
+
+Edit `~/.openclaw/openclaw.json` and add a `bot` block under `channels.openclaw-weixin`:
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "bot": {
+        "provider": "custom",
+        "service": {
+          "baseUrl": "https://api.openai.com",
+          "apiKey": "sk-xxxxxxxxxxxxxxxx",
+          "model": "gpt-4o",
+          "systemPrompt": "You are a helpful assistant.",
+          "maxHistory": 20,
+          "timeoutMs": 60000
+        }
+      }
+    }
+  }
+}
+```
+
+**Local Ollama example:**
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "bot": {
+        "provider": "custom",
+        "service": {
+          "baseUrl": "http://localhost:11434",
+          "model": "llama3",
+          "systemPrompt": "You are a helpful assistant.",
+          "maxHistory": 10
+        }
+      }
+    }
+  }
+}
+```
+
+### Config Field Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `bot.provider` | `"openclaw" \| "custom"` | `"openclaw"` | Reply engine; `"custom"` enables your own service |
+| `bot.service.baseUrl` | `string` | — | **Required.** Service base URL (no path suffix) |
+| `bot.service.apiKey` | `string` | — | API key sent as `Authorization: Bearer` header |
+| `bot.service.model` | `string` | `"gpt-3.5-turbo"` | Model name |
+| `bot.service.systemPrompt` | `string` | — | System prompt prepended to every request |
+| `bot.service.maxHistory` | `number` | `20` | Max conversation turns to retain (user+assistant each count as one) |
+| `bot.service.timeoutMs` | `number` | `60000` | HTTP request timeout (milliseconds) |
+
+### Conversation History
+
+History is kept in memory, keyed by WeChat account + user ID, and resets on gateway restart. Send `/reset` to clear the current user's history and start a fresh conversation.
+
+### Rolling Back to OpenClaw Mode
+
+Set `bot.provider` back to `"openclaw"` (or remove the `bot` block entirely), then restart the gateway:
+
+```bash
+openclaw config set channels.openclaw-weixin.bot.provider openclaw
+openclaw gateway restart
+```
+
+### Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/echo <text>` | Echo message back with channel timing stats |
+| `/toggle-debug` | Toggle debug mode (appends full-chain timing to each reply) |
+| `/reset` | Clear the current user's custom bot conversation history |
+
+
 
 ```bash
 openclaw plugins uninstall @tencent-weixin/openclaw-weixin

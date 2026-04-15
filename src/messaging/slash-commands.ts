@@ -4,8 +4,10 @@
  * 支持的指令：
  * - /echo <message>         直接回复消息（不经过 AI），并附带通道耗时统计
  * - /toggle-debug           开关 debug 模式，启用后每条 AI 回复追加全链路耗时
+ * - /reset                  清除当前用户的自定义 Bot 对话历史（custom provider 模式下有效）
  */
 import type { WeixinApiOptions } from "../api/api.js";
+import { clearCustomBotHistory } from "../bot/custom-provider.js";
 import { logger } from "../util/logger.js";
 
 import { toggleDebugMode, isDebugMode } from "./debug-mode.js";
@@ -93,6 +95,11 @@ export async function handleSlashCommand(
             ? "Debug 模式已开启"
             : "Debug 模式已关闭",
         );
+        return { handled: true };
+      }
+      case "/reset": {
+        clearCustomBotHistory(ctx.accountId, ctx.to);
+        await sendReply(ctx, "✅ 对话历史已清除，开始新的对话。");
         return { handled: true };
       }
       default:
