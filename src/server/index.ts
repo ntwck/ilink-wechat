@@ -2,8 +2,12 @@
 /**
  * ilink-wechat standalone server CLI.
  *
- * Usage:
- *   node --experimental-strip-types src/server/index.ts [command] [options]
+ * Usage (after `npm run build`):
+ *   node dist/src/server/index.js [command]
+ *
+ * Or use the npm scripts (which build automatically):
+ *   npm run login    # scan QR code and save credentials
+ *   npm run serve    # start the long-poll server
  *
  * Commands:
  *   login    Scan QR code and save credentials (first-time setup).
@@ -223,7 +227,8 @@ async function runLogin(): Promise<void> {
     }
     print(`\n✅ 登录成功！accountId=${normalizedId}`);
     print(`\n下一步：运行以下命令启动机器人：`);
-    print(`  node --experimental-strip-types src/server/index.ts start\n`);
+    print(`  npm run serve\n`);
+    print(`  (或: node dist/src/server/index.js start)\n`);
   } else {
     printError(`登录失败：${waitResult.message}`);
     process.exit(1);
@@ -307,7 +312,10 @@ function printHelp(): void {
 ilink-wechat — Standalone WeChat bot server
 
 Usage:
-  node --experimental-strip-types src/server/index.ts <command>
+  npm run login              # scan QR code and save credentials
+  npm run serve              # start the long-poll server
+
+  node dist/src/server/index.js <command>
 
 Commands:
   login    Scan WeChat QR code and save credentials

@@ -481,8 +481,6 @@ npm install
 
 ```bash
 npm run login
-# 或
-node --experimental-strip-types src/server/index.ts login
 ```
 
 终端会显示一个二维码，用微信扫码后即完成授权。凭证保存在 `~/.openclaw/openclaw-weixin/accounts/`。
@@ -509,8 +507,6 @@ node --experimental-strip-types src/server/index.ts login
 
 ```bash
 npm run serve
-# 或
-node --experimental-strip-types src/server/index.ts start
 ```
 
 启动后输出：
@@ -529,13 +525,13 @@ Press Ctrl+C to stop.
 
 ```bash
 # 扫码登录（保存凭证到 ~/.openclaw）
-node --experimental-strip-types src/server/index.ts login
+npm run login
 
-# 启动服务器（默认命令）
-node --experimental-strip-types src/server/index.ts start
+# 启动服务器
+npm run serve
 
 # 帮助
-node --experimental-strip-types src/server/index.ts help
+node dist/src/server/index.js help
 ```
 
 ### 环境变量
@@ -554,11 +550,12 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+RUN npm run build
 
 # 将预先导出的凭证目录挂载到 /root/.openclaw
 # 先在宿主机登录：npm run login，再 docker-compose up
 
-CMD ["node", "--experimental-strip-types", "src/server/index.ts", "start"]
+CMD ["node", "dist/src/server/index.js", "start"]
 ```
 
 `docker-compose.yml`：

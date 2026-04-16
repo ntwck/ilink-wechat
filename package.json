@@ -7,9 +7,11 @@
   "type": "module",
   "files": [
     "src/",
+    "dist/",
     "!src/**/*.test.ts",
     "!src/**/node_modules/",
     "index.ts",
+    "tsconfig.json",
     "openclaw.plugin.json",
     "README.md",
     "README.zh_CN.md",
@@ -17,15 +19,15 @@
     "CHANGELOG.zh_CN.md"
   ],
   "bin": {
-    "ilink-wechat": "./src/server/index.ts"
+    "ilink-wechat": "./dist/src/server/index.js"
   },
   "scripts": {
     "test": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "prepublishOnly": "npm run typecheck && npm run build",
-    "login": "node --experimental-strip-types src/server/index.ts login",
-    "serve": "node --experimental-strip-types src/server/index.ts start"
+    "login": "npm run build && node dist/src/server/index.js login",
+    "serve": "npm run build && node dist/src/server/index.js start"
   },
   "engines": {
     "node": ">=22"
