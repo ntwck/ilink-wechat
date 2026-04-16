@@ -53,6 +53,10 @@ export function createReplyProvider(cfg: unknown): ReplyProvider | undefined {
         c.requestFormat === "openai" || c.requestFormat === "simple"
           ? c.requestFormat
           : undefined,
+      mode: c.mode === "async" ? "async" : "sync",
+      callbackPort: typeof c.callbackPort === "number" ? c.callbackPort : undefined,
+      callbackPath: typeof c.callbackPath === "string" ? c.callbackPath : undefined,
+      callbackAuthToken: typeof c.callbackAuthToken === "string" ? c.callbackAuthToken : undefined,
     } satisfies RestProviderConfig);
   }
 

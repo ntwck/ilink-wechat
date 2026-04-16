@@ -18,6 +18,7 @@ import { loadWeixinAccount } from "../auth/accounts.js";
 import { readFrameworkAllowFromList } from "../auth/pairing.js";
 import { downloadRemoteImageToTemp } from "../cdn/upload.js";
 import { downloadMediaFromItem } from "../media/media-download.js";
+import { callbackRegistry } from "../providers/callback-registry.js";
 import type { ReplyProvider } from "../providers/types.js";
 import { logger } from "../util/logger.js";
 import { redactBody, redactToken } from "../util/redact.js";
@@ -180,6 +181,22 @@ async function dispatchWithExternalProvider(
         body: { ilink_user_id: to, typing_ticket: deps.typingTicket, status: TypingStatus.CANCEL },
       }).catch((err: unknown) => deps.log(`[weixin] typing stop error: ${String(err)}`));
     }
+  }
+
+  // Async callback mode: the external server has acknowledged the request.
+  // Register the WeChat send-context so the callback server can deliver the reply later.
+  if (response.pendingCallbackId) {
+    callbackRegistry.register(response.pendingCallbackId, {
+      to,
+      baseUrl: deps.baseUrl,
+      token: deps.token ?? "",
+      contextToken,
+      accountId: deps.accountId,
+    });
+    logger.info(
+      `[external-provider] async mode: registered pending callback requestId=${response.pendingCallbackId} to=${to}`,
+    );
+    return;
   }
 
   const replyText = response.text?.trim() ?? "";

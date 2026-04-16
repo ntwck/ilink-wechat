@@ -62,6 +62,29 @@ const restProviderSchema = baseExternalProviderSchema.extend({
    *   - "openai": OpenAI chat-completions format — the endpoint must be OpenAI-compatible.
    */
   requestFormat: z.enum(["simple", "openai"]).optional(),
+  /**
+   * Reply delivery mode:
+   *   - "sync" (default): the bot waits for the HTTP response and sends it to WeChat.
+   *   - "async": the bot fires the POST, receives an acknowledgement, and returns.
+   *     The external server calls back later via the bot's callback endpoint.
+   */
+  mode: z.enum(["sync", "async"]).optional(),
+  /**
+   * Port for the async callback HTTP server (default: 8765).
+   * Only used when mode="async".
+   */
+  callbackPort: z.number().int().positive().optional(),
+  /**
+   * URL path for the async callback endpoint (default: "/callback").
+   * Only used when mode="async".
+   */
+  callbackPath: z.string().optional(),
+  /**
+   * Auth token the external server must send in the Authorization header
+   * when calling the callback endpoint.
+   * Only used when mode="async".
+   */
+  callbackAuthToken: z.string().optional(),
 });
 
 const wsProviderSchema = baseExternalProviderSchema.extend({

@@ -32,6 +32,16 @@ export interface ExternalReplyResponse {
    *   - absolute path or file:// URL → uploaded directly to CDN
    */
   mediaUrl?: string;
+  /**
+   * When set, this response uses async callback mode.
+   * The provider has already posted the request to the external server and received
+   * an acknowledgement (HTTP 2xx).  The external server will call back later via the
+   * bot's callback endpoint with this ID to deliver the actual reply text.
+   *
+   * The caller (dispatchWithExternalProvider) must register the send context in the
+   * callback registry so that the callback server can deliver the reply.
+   */
+  pendingCallbackId?: string;
 }
 
 /** Interface for pluggable reply providers. */

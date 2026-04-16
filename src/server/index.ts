@@ -39,6 +39,7 @@ import { clearContextTokensForAccount } from "../messaging/inbound.js";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "../auth/login-qr.js";
 import { createReplyProvider } from "../providers/index.js";
 import { runStandaloneMonitor } from "./standalone-monitor.js";
+import { startCallbackServer } from "./callback-server.js";
 import { resolveStateDir } from "../storage/state-dir.js";
 import { logger } from "../util/logger.js";
 
@@ -54,6 +55,10 @@ type ProviderConfig = {
   timeoutMs?: number;
   fallbackMessage?: string;
   requestFormat?: string;
+  mode?: string;
+  callbackPort?: number;
+  callbackPath?: string;
+  callbackAuthToken?: string;
 };
 
 type StandaloneConfig = {
@@ -285,19 +290,30 @@ async function runStart(): Promise<void> {
 
   print(`\n🤖 ilink-wechat standalone server`);
   print(`   account : ${accountId}`);
-  print(`   provider: ${replyProvider.type}`);
+  print(`   provider: ${replyProvider.type}${cfg.provider.mode === "async" ? " (async)" : ""}`);
   print(`   baseUrl : ${baseUrl}`);
   print(`   logFile : ${logger.getLogFilePath()}`);
+
+  // Start the async callback server if the provider is configured for async mode.
+  let callbackHandle: import("./callback-server.js").CallbackServerHandle | undefined;
+  if (cfg.provider.mode === "async") {
+    callbackHandle = startCallbackServer({
+      port: cfg.provider.callbackPort,
+      path: cfg.provider.callbackPath,
+      authToken: cfg.provider.callbackAuthToken,
+    });
+  }
+
   print(`\nPress Ctrl+C to stop.\n`);
 
   const ac = new AbortController();
-  process.on("SIGINT", () => {
+  const shutdown = (): void => {
     print(`\n[ilink-wechat] Shutting down...`);
     ac.abort();
-  });
-  process.on("SIGTERM", () => {
-    ac.abort();
-  });
+    callbackHandle?.close().catch(() => undefined);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 
   await runStandaloneMonitor({
     baseUrl,
@@ -343,7 +359,7 @@ Environment variables:
   OPENCLAW_LOG_LEVEL   Log level: TRACE|DEBUG|INFO|WARN|ERROR
   ILINK_CONFIG         Path to config file
 
-Config file (ilink-wechat.json or openclaw.json):
+Config file (ilink-wechat.json or openclaw.json) — sync mode (default):
   {
     "provider": {
       "type": "rest",
@@ -352,6 +368,25 @@ Config file (ilink-wechat.json or openclaw.json):
       "timeoutMs": 30000
     }
   }
+
+Config file — async callback mode:
+  {
+    "provider": {
+      "type": "rest",
+      "endpoint": "http://localhost:8080/chat",
+      "authToken": "optional-secret",
+      "mode": "async",
+      "callbackPort": 8765,
+      "callbackPath": "/callback",
+      "callbackAuthToken": "callback-secret"
+    }
+  }
+
+  In async mode the bot POSTs the message to your server and returns immediately.
+  Your server calls back to http://<bot-host>:<callbackPort><callbackPath> with:
+    POST /callback
+    Authorization: <callbackAuthToken>
+    { "requestId": "<id from original POST>", "text": "Reply text" }
 `);
 }
 

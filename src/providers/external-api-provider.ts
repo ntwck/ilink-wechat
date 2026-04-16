@@ -20,6 +20,7 @@
 
 import { logger } from "../util/logger.js";
 import type { ExternalReplyRequest, ExternalReplyResponse, ReplyProvider } from "./types.js";
+import { generateId } from "../util/random.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_FALLBACK_MESSAGE = "⚠️ 服务暂时不可用，请稍后再试。";
@@ -45,6 +46,31 @@ export interface RestProviderConfig {
    * - "openai": OpenAI chat-completions compatible format.
    */
   requestFormat?: "simple" | "openai";
+  /**
+   * Reply delivery mode.
+   * - "sync" (default): the bot waits for the HTTP response and sends its content to WeChat.
+   * - "async": the bot fires the POST and returns immediately.  The external server is
+   *   expected to call back to the bot's callback endpoint (configured via callbackPort /
+   *   callbackPath / callbackAuthToken) with the reply when it is ready.
+   */
+  mode?: "sync" | "async";
+  /**
+   * Port for the async callback HTTP server (default: 8765).
+   * Only used when mode="async".
+   */
+  callbackPort?: number;
+  /**
+   * URL path for the async callback endpoint (default: "/callback").
+   * Only used when mode="async".
+   */
+  callbackPath?: string;
+  /**
+   * Auth token that the external server must include in the Authorization header
+   * when calling the callback endpoint.  When omitted, the callback endpoint is
+   * unprotected (not recommended in production).
+   * Only used when mode="async".
+   */
+  callbackAuthToken?: string;
 }
 
 export class RestReplyProvider implements ReplyProvider {
@@ -53,6 +79,72 @@ export class RestReplyProvider implements ReplyProvider {
   constructor(private readonly cfg: RestProviderConfig) {}
 
   async generateReply(req: ExternalReplyRequest): Promise<ExternalReplyResponse> {
+    if (this.cfg.mode === "async") {
+      return this.generateReplyAsync(req);
+    }
+    return this.generateReplySync(req);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Async mode: fire-and-forget POST, return a pendingCallbackId immediately
+  // ---------------------------------------------------------------------------
+
+  private async generateReplyAsync(req: ExternalReplyRequest): Promise<ExternalReplyResponse> {
+    const requestId = generateId("cb");
+    const payload = this.buildRequestBody(req, requestId);
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.cfg.authToken?.trim()) {
+      const headerName = this.cfg.authHeader?.trim() || "Authorization";
+      headers[headerName] = this.cfg.authToken.trim();
+    }
+
+    logger.debug(
+      `[external-rest/async] POST ${this.cfg.endpoint} requestId=${requestId}`,
+    );
+
+    // Fire and forget — we only wait long enough to confirm the server accepted the request.
+    const controller = new AbortController();
+    const ackTimeoutMs = Math.min(this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS, 10_000);
+    const t = setTimeout(() => controller.abort(), ackTimeoutMs);
+
+    try {
+      const res = await fetch(this.cfg.endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(t);
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        logger.error(
+          `[external-rest/async] HTTP ${res.status} from ${this.cfg.endpoint}: ${errText.slice(0, 200)}`,
+        );
+        // Ack failed — fall back to error message rather than hanging forever.
+        return { text: this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE };
+      }
+      // Drain the ack response body (typically "{"ok":true}") without blocking.
+      res.text().catch(() => undefined);
+    } catch (err) {
+      clearTimeout(t);
+      if ((err as { name?: string }).name === "AbortError") {
+        logger.error(`[external-rest/async] Ack timed out after ${ackTimeoutMs}ms`);
+      } else {
+        logger.error(`[external-rest/async] Fetch error: ${String(err)}`);
+      }
+      return { text: this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE };
+    }
+
+    // Return the pending callback ID so that dispatchWithExternalProvider can register
+    // the send context in the callback registry.
+    return { pendingCallbackId: requestId };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sync mode (original behaviour)
+  // ---------------------------------------------------------------------------
+
+  private async generateReplySync(req: ExternalReplyRequest): Promise<ExternalReplyResponse> {
     const timeoutMs = this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const fallbackMessage = this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE;
 
@@ -99,7 +191,7 @@ export class RestReplyProvider implements ReplyProvider {
     }
   }
 
-  private buildRequestBody(req: ExternalReplyRequest): unknown {
+  private buildRequestBody(req: ExternalReplyRequest, requestId?: string): unknown {
     if (this.cfg.requestFormat === "openai") {
       return {
         model: "gpt-3.5-turbo",
@@ -114,6 +206,7 @@ export class RestReplyProvider implements ReplyProvider {
       body: req.body,
       contextToken: req.contextToken,
       accountId: req.accountId,
+      ...(requestId ? { requestId } : {}),
       ...(req.mediaPath ? { mediaPath: req.mediaPath, mediaType: req.mediaType } : {}),
     };
   }
