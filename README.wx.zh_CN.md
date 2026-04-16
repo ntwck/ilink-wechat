@@ -1,6 +1,6 @@
 # 微信
 
-[English](./README.md)
+[English](./README.wx.md)
 
 OpenClaw 的微信渠道插件，支持通过扫码完成登录授权。
 
@@ -512,12 +512,27 @@ tar xzf wechat-accounts.tar.gz -C ~/.openclaw/
 
 ```json
 {
+  "id": "openclaw-weixin",
+  "version": "2.1.8",
+  "channels": [
+    "openclaw-weixin"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "accountId": "单账号可不填写，多个账号请填写账号ID",
   "provider": {
     "type": "rest",
-    "endpoint": "http://localhost:8080/chat",
-    "authToken": "your-secret-token",
+    "endpoint": "http://localhost:3000/api/bot/ilink",
+    "authToken": "请自行设置一个随机字符串，确保接口安全",
     "timeoutMs": 30000,
-    "fallbackMessage": "⚠️ 服务暂时不可用，请稍后再试。"
+    "fallbackMessage": "Ooops...",
+    "mode": "async",
+    "callbackPort": 8765,
+    "callbackPath": "/callback",
+    "callbackAuthToken": "请自行设置一个随机字符串，确保回调接口安全"
   }
 }
 ```

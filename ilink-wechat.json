@@ -1,0 +1,24 @@
+{
+  "id": "openclaw-weixin",
+  "version": "2.1.8",
+  "channels": [
+    "openclaw-weixin"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  },
+  "accountId": "单账号可不填写，多个账号请填写账号ID",
+  "provider": {
+    "type": "rest",
+    "endpoint": "http://localhost:3000/api/bot/ilink",
+    "authToken": "请自行设置一个随机字符串，确保接口安全",
+    "timeoutMs": 30000,
+    "fallbackMessage": "Ooops...",
+    "mode": "async",
+    "callbackPort": 8765,
+    "callbackPath": "/callback",
+    "callbackAuthToken": "请自行设置一个随机字符串，确保回调接口安全"
+  }
+}
