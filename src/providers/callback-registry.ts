@@ -26,7 +26,12 @@ export type PendingCallbackContext = {
   expiresAt: number;
 };
 
-/** Entries are kept for up to 1 hour then silently dropped. */
+/**
+ * Entries are kept for 1 hour then silently dropped.
+ * WeChat's customer-service context token is valid for 24 h, but a 1-hour window
+ * is a pragmatic balance: it covers multi-turn async conversations while bounding
+ * memory usage and aligning with typical session lengths.
+ */
 const ENTRY_TTL_MS = 60 * 60 * 1_000;
 
 class CallbackRegistry {
@@ -38,9 +43,9 @@ class CallbackRegistry {
   }
 
   /** Retrieve the context for a given requestId WITHOUT removing it, so the same
-   *  requestId can be used across multiple callbacks within the TTL window.
+   *  requestId can be reused across multiple callbacks within the TTL window.
    *  Returns undefined if not found or expired. */
-  consume(requestId: string): PendingCallbackContext | undefined {
+  get(requestId: string): PendingCallbackContext | undefined {
     const entry = this.pending.get(requestId);
     if (!entry) return undefined;
     if (Date.now() > entry.expiresAt) {
