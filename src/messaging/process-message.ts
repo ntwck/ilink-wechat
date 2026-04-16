@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { createTypingCallbacks } from "openclaw/plugin-sdk/channel-runtime";
@@ -39,7 +41,12 @@ const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "wei
 export type ProcessMessageDeps = {
   accountId: string;
   config: import("openclaw/plugin-sdk/core").OpenClawConfig;
-  channelRuntime: PluginRuntime["channel"];
+  /**
+   * OpenClaw channel runtime. Required for the default OpenClaw AI dispatch path.
+   * When `replyProvider` is set and this is undefined, the standalone path is used
+   * (no OpenClaw gateway required).
+   */
+  channelRuntime?: PluginRuntime["channel"];
   baseUrl: string;
   cdnBaseUrl: string;
   token?: string;
@@ -63,6 +70,42 @@ function extractTextBody(itemList?: import("../api/types.js").MessageItem[]): st
     }
   }
   return "";
+}
+
+/**
+ * Standalone fallback for saving inbound media when the OpenClaw channel runtime
+ * is not available.  Files are written to <os.tmpdir()>/ilink-wechat/media/<subdir>/.
+ */
+async function standaloneMediaSave(
+  buffer: Buffer,
+  contentType?: string,
+  subdir?: string,
+  maxBytes?: number,
+  originalFilename?: string,
+): Promise<{ path: string }> {
+  const dir = path.join(os.tmpdir(), "ilink-wechat", "media", subdir ?? "inbound");
+  fs.mkdirSync(dir, { recursive: true });
+
+  let ext = "bin";
+  if (originalFilename) {
+    const dot = originalFilename.lastIndexOf(".");
+    if (dot >= 0) ext = originalFilename.slice(dot + 1);
+  } else if (contentType) {
+    // "image/jpeg; charset=…" → "jpeg"
+    const bare = contentType.split(";")[0].trim();
+    const slash = bare.indexOf("/");
+    ext = (slash >= 0 ? bare.slice(slash + 1) : bare).split("+")[0] || "bin";
+  }
+
+  if (maxBytes != null && buffer.length > maxBytes) {
+    throw new Error(`standaloneMediaSave: media too large (${buffer.length} > ${maxBytes} bytes)`);
+  }
+
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const filePath = path.join(dir, filename);
+  fs.writeFileSync(filePath, buffer);
+  logger.debug(`standaloneMediaSave: saved ${buffer.length}B to ${filePath}`);
+  return { path: filePath };
 }
 
 // ---------------------------------------------------------------------------
@@ -207,11 +250,11 @@ export async function processOneMessage(
   full: WeixinMessage,
   deps: ProcessMessageDeps,
 ): Promise<void> {
-  if (!deps?.channelRuntime) {
+  if (!deps?.channelRuntime && !deps.replyProvider) {
     logger.error(
-      `processOneMessage: channelRuntime is undefined, skipping message from=${full.from_user_id}`,
+      `processOneMessage: channelRuntime is undefined and no replyProvider set, skipping message from=${full.from_user_id}`,
     );
-    deps.errLog("processOneMessage: channelRuntime is undefined, skip");
+    deps.errLog("processOneMessage: no channelRuntime and no replyProvider, skip");
     return;
   }
 
@@ -282,9 +325,11 @@ export async function processOneMessage(
   const mediaItem = mainMediaItem ?? refMediaItem;
   if (mediaItem) {
     const label = refMediaItem ? "ref" : "inbound";
+    // Standalone mode uses a simple temp-dir save when channelRuntime is unavailable.
+    const saveMedia = deps.channelRuntime?.media.saveMediaBuffer ?? standaloneMediaSave;
     const downloaded = await downloadMediaFromItem(mediaItem, {
       cdnBaseUrl: deps.cdnBaseUrl,
-      saveMedia: deps.channelRuntime.media.saveMediaBuffer,
+      saveMedia,
       log: deps.log,
       errLog: deps.errLog,
       label,
@@ -302,43 +347,60 @@ export async function processOneMessage(
 
   const ctx = weixinMessageToMsgContext(full, deps.accountId, mediaOpts);
 
-  // --- Framework command authorization ---
+  // --- Authorization ---
   const rawBody = ctx.Body?.trim() ?? "";
   ctx.CommandBody = rawBody;
 
   const senderId = full.from_user_id ?? "";
 
-  const { senderAllowedForCommands, commandAuthorized } =
-    await resolveSenderCommandAuthorizationWithRuntime({
-      cfg: deps.config,
-      rawBody,
+  let senderAllowedForCommands: boolean;
+  let commandAuthorized: boolean;
+
+  if (deps.channelRuntime) {
+    // Full OpenClaw authorization pipeline (framework command auth + pairing).
+    ({ senderAllowedForCommands, commandAuthorized } =
+      await resolveSenderCommandAuthorizationWithRuntime({
+        cfg: deps.config,
+        rawBody,
+        isGroup: false,
+        dmPolicy: "pairing",
+        configuredAllowFrom: [],
+        configuredGroupAllowFrom: [],
+        senderId,
+        isSenderAllowed: (id: string, list: string[]) => list.length === 0 || list.includes(id),
+        /** Pairing: framework credentials `*-allowFrom.json`, with account `userId` fallback for legacy installs. */
+        readAllowFromStore: async () => {
+          const fromStore = readFrameworkAllowFromList(deps.accountId);
+          if (fromStore.length > 0) return fromStore;
+          const uid = loadWeixinAccount(deps.accountId)?.userId?.trim();
+          return uid ? [uid] : [];
+        },
+        runtime: deps.channelRuntime.commands,
+      }));
+
+    const directDmOutcome = resolveDirectDmAuthorizationOutcome({
       isGroup: false,
       dmPolicy: "pairing",
-      configuredAllowFrom: [],
-      configuredGroupAllowFrom: [],
-      senderId,
-      isSenderAllowed: (id: string, list: string[]) => list.length === 0 || list.includes(id),
-      /** Pairing: framework credentials `*-allowFrom.json`, with account `userId` fallback for legacy installs. */
-      readAllowFromStore: async () => {
-        const fromStore = readFrameworkAllowFromList(deps.accountId);
-        if (fromStore.length > 0) return fromStore;
-        const uid = loadWeixinAccount(deps.accountId)?.userId?.trim();
-        return uid ? [uid] : [];
-      },
-      runtime: deps.channelRuntime.commands,
+      senderAllowedForCommands,
     });
 
-  const directDmOutcome = resolveDirectDmAuthorizationOutcome({
-    isGroup: false,
-    dmPolicy: "pairing",
-    senderAllowedForCommands,
-  });
-
-  if (directDmOutcome === "disabled" || directDmOutcome === "unauthorized") {
-    logger.info(
-      `authorization: dropping message from=${senderId} outcome=${directDmOutcome}`,
-    );
-    return;
+    if (directDmOutcome === "disabled" || directDmOutcome === "unauthorized") {
+      logger.info(
+        `authorization: dropping message from=${senderId} outcome=${directDmOutcome}`,
+      );
+      return;
+    }
+  } else {
+    // Standalone mode: simple file-based allowFrom list (no OpenClaw runtime).
+    const allowFrom = readFrameworkAllowFromList(deps.accountId);
+    const fallbackUserId = loadWeixinAccount(deps.accountId)?.userId?.trim();
+    const effectiveList = allowFrom.length > 0 ? allowFrom : (fallbackUserId ? [fallbackUserId] : []);
+    senderAllowedForCommands = effectiveList.length === 0 || effectiveList.includes(senderId);
+    commandAuthorized = senderAllowedForCommands;
+    if (!senderAllowedForCommands) {
+      logger.info(`standalone auth: dropping message from=${senderId} (not in allowFrom)`);
+      return;
+    }
   }
 
   ctx.CommandAuthorized = commandAuthorized;
@@ -387,8 +449,15 @@ export async function processOneMessage(
   }
 
   // -------------------------------------------------------------------------
-  // OpenClaw dispatch path (default)
+  // OpenClaw dispatch path (default) — channelRuntime must be present here.
   // -------------------------------------------------------------------------
+
+  // Unreachable in standalone mode (replyProvider would have returned above).
+  // TypeScript guard to keep the type system happy.
+  if (!deps.channelRuntime) {
+    logger.error("processOneMessage: reached OpenClaw path without channelRuntime — should not happen");
+    return;
+  }
 
   if (debug) {
     debugTrace.push(

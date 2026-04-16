@@ -16,11 +16,16 @@
     "CHANGELOG.md",
     "CHANGELOG.zh_CN.md"
   ],
+  "bin": {
+    "ilink-wechat": "./src/server/index.ts"
+  },
   "scripts": {
     "test": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "prepublishOnly": "npm run typecheck && npm run build"
+    "prepublishOnly": "npm run typecheck && npm run build",
+    "login": "node --experimental-strip-types src/server/index.ts login",
+    "serve": "node --experimental-strip-types src/server/index.ts start"
   },
   "engines": {
     "node": ">=22"

@@ -461,6 +461,132 @@ async def chat(req: ChatRequest, authorization: str = Header(default="")):
     return {"reply": reply}
 ```
 
+## 独立 Node.js 服务器模式（不依赖 OpenClaw 主进程）
+
+除了作为 OpenClaw 插件运行，本项目还可以**作为一个独立的 Node.js 进程**启动，无需安装或运行 OpenClaw 网关。  
+这适合将微信机器人集成到自己的 CI/CD 或 Docker 流程中。
+
+### 前置条件
+
+- Node.js ≥ 22（已安装）
+- 已 clone 本仓库并安装依赖：
+
+```bash
+git clone https://github.com/ntwck/ilink-wechat.git
+cd ilink-wechat
+npm install
+```
+
+### 第一步：扫码登录
+
+```bash
+npm run login
+# 或
+node --experimental-strip-types src/server/index.ts login
+```
+
+终端会显示一个二维码，用微信扫码后即完成授权。凭证保存在 `~/.openclaw/openclaw-weixin/accounts/`。
+
+### 第二步：创建配置文件
+
+在项目根目录创建 `ilink-wechat.json`（或使用已有的 `~/.openclaw/openclaw.json`）：
+
+```json
+{
+  "provider": {
+    "type": "rest",
+    "endpoint": "http://localhost:8080/chat",
+    "authToken": "your-secret-token",
+    "timeoutMs": 30000,
+    "fallbackMessage": "⚠️ 服务暂时不可用，请稍后再试。"
+  }
+}
+```
+
+> 支持 `rest` 和 `ws` 两种 provider，协议格式与"个人机器人模式"一节完全相同。
+
+### 第三步：启动服务器
+
+```bash
+npm run serve
+# 或
+node --experimental-strip-types src/server/index.ts start
+```
+
+启动后输出：
+
+```
+🤖 ilink-wechat standalone server
+   account : abc123-im-bot
+   provider: rest
+   baseUrl : https://ilinkai.weixin.qq.com
+   logFile : /tmp/openclaw/openclaw-2026-04-15.log
+
+Press Ctrl+C to stop.
+```
+
+### 命令行参考
+
+```bash
+# 扫码登录（保存凭证到 ~/.openclaw）
+node --experimental-strip-types src/server/index.ts login
+
+# 启动服务器（默认命令）
+node --experimental-strip-types src/server/index.ts start
+
+# 帮助
+node --experimental-strip-types src/server/index.ts help
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `OPENCLAW_STATE_DIR` | `~/.openclaw` | 凭证和状态的存放目录 |
+| `OPENCLAW_LOG_LEVEL` | `INFO` | 日志级别：`TRACE` `DEBUG` `INFO` `WARN` `ERROR` |
+| `ILINK_CONFIG` | 自动检测 | 配置文件路径（优先级：`$ILINK_CONFIG` > `./ilink-wechat.json` > `~/.openclaw/openclaw.json`） |
+
+### Docker 部署示例
+
+```dockerfile
+FROM node:22-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+
+# 将预先导出的凭证目录挂载到 /root/.openclaw
+# 先在宿主机登录：npm run login，再 docker-compose up
+
+CMD ["node", "--experimental-strip-types", "src/server/index.ts", "start"]
+```
+
+`docker-compose.yml`：
+
+```yaml
+services:
+  wechat-bot:
+    build: .
+    volumes:
+      - ~/.openclaw:/root/.openclaw   # 挂载已登录凭证
+    environment:
+      - ILINK_CONFIG=/root/.openclaw/openclaw.json
+    restart: unless-stopped
+```
+
+### 多账号支持
+
+登录多个账号后，在配置文件中指定要使用的账号：
+
+```json
+{
+  "accountId": "abc123-im-bot",
+  "provider": { "type": "rest", "endpoint": "http://localhost:8080/chat" }
+}
+```
+
+如果只登录了一个账号，可省略 `accountId`，服务器会自动使用唯一的那个账号。
+
 ## 卸载
 
 ```bash
