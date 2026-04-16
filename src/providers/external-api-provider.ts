@@ -23,7 +23,7 @@ import type { ExternalReplyRequest, ExternalReplyResponse, ReplyProvider } from 
 import { generateId } from "../util/random.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_FALLBACK_MESSAGE = "⚠️ 服务暂时不可用，请稍后再试。";
+const DEFAULT_FALLBACK_MESSAGE = "❌ 服务暂时不可用，请稍后再试～";
 
 // ---------------------------------------------------------------------------
 // REST provider
