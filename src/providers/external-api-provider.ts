@@ -128,7 +128,7 @@ export class RestReplyProvider implements ReplyProvider {
           `[external-rest/async] HTTP ${res.status} from ${this.cfg.endpoint}: ${errText.slice(0, 200)}`,
         );
         // Ack failed — fall back to error message rather than hanging forever.
-        return { text: this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE };
+        return { text: (this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE) + " [FB-1]" };
       }
       logger.debug(`[external-rest/async] ACK HTTP ${res.status} from ${this.cfg.endpoint}`);
       // Drain the ack response body (typically "{"ok":true}") without blocking.
@@ -145,7 +145,7 @@ export class RestReplyProvider implements ReplyProvider {
         return { pendingCallbackId: requestId };
       }
       logger.error(`[external-rest/async] Fetch error: ${String(err)}`);
-      return { text: this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE };
+      return { text: (this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE) + " [FB-2]" };
     }
 
     // Return the pending callback ID so that dispatchWithExternalProvider can register
@@ -188,7 +188,7 @@ export class RestReplyProvider implements ReplyProvider {
         logger.error(
           `[external-rest] HTTP ${res.status} from ${this.cfg.endpoint}: ${errText.slice(0, 200)}`,
         );
-        return { text: fallbackMessage };
+        return { text: fallbackMessage + " [FB-3]" };
       }
 
       const rawText = await res.text();
@@ -200,7 +200,7 @@ export class RestReplyProvider implements ReplyProvider {
       } else {
         logger.error(`[external-rest] Fetch error: ${String(err)}`);
       }
-      return { text: fallbackMessage };
+      return { text: fallbackMessage + " [FB-4]" };
     }
   }
 
@@ -227,7 +227,7 @@ export class RestReplyProvider implements ReplyProvider {
   private parseResponse(rawText: string, fallbackMessage: string): ExternalReplyResponse {
     if (!rawText.trim()) {
       logger.warn(`[external-rest] Empty response body`);
-      return { text: fallbackMessage };
+      return { text: fallbackMessage + " [FB-5]" };
     }
     try {
       const parsed = JSON.parse(rawText) as Record<string, unknown>;
@@ -238,7 +238,7 @@ export class RestReplyProvider implements ReplyProvider {
         const content = choices?.[0]?.message?.content?.trim();
         if (content) return { text: content };
         logger.warn(`[external-rest] OpenAI response has no choices[0].message.content`);
-        return { text: fallbackMessage };
+        return { text: fallbackMessage + " [FB-6]" };
       }
 
       // simple format: reply | text | content field
@@ -248,14 +248,14 @@ export class RestReplyProvider implements ReplyProvider {
         logger.warn(
           `[external-rest] Response has no reply/text/content field: ${rawText.slice(0, 200)}`,
         );
-        return { text: fallbackMessage };
+        return { text: fallbackMessage + " [FB-7]" };
       }
       logger.debug(`[external-rest] parseResponse: textLen=${text?.trim().length ?? 0} hasMediaUrl=${Boolean(mediaUrl)}`);
       return { text: text?.trim(), mediaUrl };
     } catch {
       // Treat the response as plain text
       const text = rawText.trim();
-      if (!text) return { text: fallbackMessage };
+      if (!text) return { text: fallbackMessage + " [FB-8]" };
       return { text };
     }
   }
@@ -290,7 +290,7 @@ export class WsReplyProvider implements ReplyProvider {
         `[external-ws] global WebSocket is not available. ` +
           `Ensure you are running Node.js ≥22 or provide a polyfill.`,
       );
-      return { text: fallbackMessage };
+      return { text: fallbackMessage + " [FB-9]" };
     }
 
     try {
@@ -298,12 +298,12 @@ export class WsReplyProvider implements ReplyProvider {
       const text = await this.exchangeMessage(req, timeoutMs);
       if (!text?.trim()) {
         logger.warn(`[external-ws] Empty or missing reply from server`);
-        return { text: fallbackMessage };
+        return { text: fallbackMessage + " [FB-10]" };
       }
       return { text: text.trim() };
     } catch (err) {
       logger.error(`[external-ws] Error: ${String(err)}`);
-      return { text: fallbackMessage };
+      return { text: fallbackMessage + " [FB-11]" };
     }
   }
 
