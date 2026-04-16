@@ -26,13 +26,8 @@ export type PendingCallbackContext = {
   expiresAt: number;
 };
 
-/**
- * Entries are kept for 1 hour then silently dropped.
- * WeChat's customer-service context token is valid for 24 h, but a 1-hour window
- * is a pragmatic balance: it covers multi-turn async conversations while bounding
- * memory usage and aligning with typical session lengths.
- */
-const ENTRY_TTL_MS = 60 * 60 * 1_000;
+/** Entries are kept for up to 10 minutes then silently dropped. */
+const ENTRY_TTL_MS = 10 * 60 * 1_000;
 
 class CallbackRegistry {
   private readonly pending = new Map<string, PendingCallbackContext>();
