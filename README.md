@@ -162,34 +162,3 @@ services:
 ```
 
 如果只登录了一个账号，可省略 `accountId`，服务器会自动使用唯一的那个账号。
-
-## 卸载
-
-```bash
-openclaw plugins uninstall @tencent-weixin/openclaw-weixin
-```
-
-## 故障排查
-
-### "requires OpenClaw >=2026.3.22" 报错
-
-你的 OpenClaw 版本太旧，不兼容当前插件版本。检查版本：
-
-```bash
-openclaw --version
-```
-
-安装旧版插件线：
-
-```bash
-openclaw plugins install @tencent-weixin/openclaw-weixin@legacy
-```
-
-### Channel 显示 "OK" 但未连接
-
-确保 `~/.openclaw/openclaw.json` 中 `plugins.entries.openclaw-weixin.enabled` 为 `true`：
-
-```bash
-openclaw config set plugins.entries.openclaw-weixin.enabled true
-openclaw gateway restart
-```
