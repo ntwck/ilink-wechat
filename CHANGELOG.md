@@ -4,6 +4,12 @@
 
 This project follows the [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [2.1.8] - 2026-04-16
+
+### Fixed
+
+- **Async callback 404 on multi-turn conversations:** `callbackRegistry.consume()` was deleting the registry entry on the first successful callback lookup.  When the external server called back a second time with the same `requestId` (e.g. an interactive SSH/password-prompt flow), the entry was already gone and the callback server returned `404 unknown or expired requestId`.  Changed `consume()` to `get()` so entries are **not** removed on retrieval — they persist until the 10-minute TTL expires, allowing the same `requestId` to be used across multiple callbacks within the TTL window.
+
 ## [2.1.7] - 2026-04-07
 
 ### Fixed

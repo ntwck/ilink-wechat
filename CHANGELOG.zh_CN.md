@@ -4,6 +4,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/) 格式。
 
+## [2.1.8] - 2026-04-16
+
+### 修复
+
+- **异步回调多轮对话 404 问题：** `callbackRegistry.consume()` 在第一次成功查找回调记录后会立即将其删除。当外部服务器以相同 `requestId` 再次回调时（例如交互式 SSH/密码输入流程），记录已被删除，回调服务器返回 `404 unknown or expired requestId`。将 `consume()` 改为 `get()`，查找时**不再删除**记录——记录保留至 10 分钟 TTL 到期，允许同一 `requestId` 在 TTL 窗口内多次回调。
+
 ## [2.1.7] - 2026-04-07
 
 ### 修复
