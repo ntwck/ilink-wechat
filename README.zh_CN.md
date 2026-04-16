@@ -279,6 +279,334 @@ openclaw config set session.dmScope per-account-channel-peer
 
 > 完整的类型定义见 [`src/api/types.ts`](src/api/types.ts)，API 调用实现见 [`src/api/api.ts`](src/api/api.ts)。
 
+## 个人机器人模式（不依赖 LLM）
+
+默认情况下，插件将消息转发给 OpenClaw 的 AI 管道（LLM + Tools）处理。如果你希望用自己的后端服务来生成回复，可以通过在 `openclaw.json` 中配置 `provider` 字段来接入。
+
+### 快速配置
+
+编辑 `~/.openclaw/openclaw.json`，在 `channels.openclaw-weixin` 下添加 `provider`：
+
+**使用 REST 接口：**
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "provider": {
+        "type": "rest",
+        "endpoint": "http://localhost:8080/chat",
+        "authToken": "your-secret-token",
+        "timeoutMs": 30000,
+        "fallbackMessage": "⚠️ 服务暂时不可用，请稍后再试。"
+      }
+    }
+  }
+}
+```
+
+**使用 WebSocket 接口：**
+
+```json
+{
+  "channels": {
+    "openclaw-weixin": {
+      "provider": {
+        "type": "ws",
+        "endpoint": "ws://localhost:8080/ws",
+        "authToken": "your-secret-token",
+        "timeoutMs": 30000,
+        "fallbackMessage": "⚠️ 服务暂时不可用，请稍后再试。"
+      }
+    }
+  }
+}
+```
+
+修改配置后重启 gateway 使配置生效：
+
+```bash
+openclaw gateway restart
+```
+
+### provider 配置字段
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `type` | `"openclaw"` \| `"rest"` \| `"ws"` | `"openclaw"` | 回复来源。`openclaw` = 使用内置 AI 管道（默认）；`rest` = 调用 HTTP 接口；`ws` = 调用 WebSocket 接口。 |
+| `endpoint` | `string` | — | 你的服务地址（`rest`/`ws` 必填）。 |
+| `authHeader` | `string` | `"Authorization"` | 鉴权 header 名称（仅 `rest`）。 |
+| `authToken` | `string` | — | 鉴权 token。REST 模式：发送到 `authHeader`；WebSocket 模式：包含在消息载荷的 `authToken` 字段中，或嵌入 URL（如 `ws://host/ws?token=xxx`，见下方说明）。 |
+| `timeoutMs` | `number` | `30000` | 单次请求超时（毫秒）。超时后返回 `fallbackMessage`。 |
+| `fallbackMessage` | `string` | `"⚠️ 服务暂时不可用，请稍后再试。"` | 外部服务不可达或返回空时发送给用户的提示。 |
+| `requestFormat` | `"simple"` \| `"openai"` | `"simple"` | 请求体格式（仅 `rest`）。 |
+
+### REST 接口协议（type = "rest"）
+
+#### requestFormat = "simple"（默认）
+
+**请求体（POST JSON）：**
+
+```json
+{
+  "from": "<用户 WeChat ID>",
+  "body": "<消息文本>",
+  "contextToken": "<会话上下文令牌>",
+  "accountId": "<机器人账号 ID>",
+  "mediaPath": "/tmp/decrypted-image.jpg",
+  "mediaType": "image/*"
+}
+```
+
+> `mediaPath` 和 `mediaType` 仅在消息包含图片/语音/文件/视频时才出现。
+
+**响应体（JSON 或纯文本）：**
+
+```json
+{
+  "reply": "你好，这是我的回复",
+  "mediaUrl": "https://example.com/image.png"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `reply` / `text` / `content` | `string` | 回复文本（三选一均可识别）。 |
+| `mediaUrl` | `string?` | 可选。回复中的图片/文件链接（`https://` URL 或本地绝对路径）。 |
+
+也支持直接返回纯文本字符串作为响应体。
+
+#### requestFormat = "openai"
+
+请求体遵循 [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat) 格式，兼容任何 OpenAI-compatible 接口（如 Ollama、vLLM、LocalAI 等）：
+
+```json
+{
+  "model": "gpt-3.5-turbo",
+  "messages": [{ "role": "user", "content": "<消息文本>" }]
+}
+```
+
+响应体按 OpenAI 格式解析 `choices[0].message.content`。
+
+### WebSocket 接口协议（type = "ws"）
+
+每条消息建立一次 WebSocket 连接。连接建立后发送一个 JSON 帧，等待一个回复帧，然后关闭连接。
+
+**发送帧：**
+
+```json
+{
+  "type": "message",
+  "from": "<用户 WeChat ID>",
+  "body": "<消息文本>",
+  "contextToken": "<会话上下文令牌>",
+  "accountId": "<机器人账号 ID>",
+  "authToken": "<鉴权 token>",
+  "mediaPath": "/tmp/decrypted-image.jpg",
+  "mediaType": "image/*"
+}
+```
+
+> **WebSocket 鉴权说明**：Node.js 22 内置的 `WebSocket` 不支持在构造函数中设置自定义 HTTP 头（如 `Authorization`）。鉴权有两种方式：
+> 1. **URL 参数**（推荐）：将 token 嵌入 endpoint，如 `"ws://localhost:8080/ws?token=your-secret-token"`。
+> 2. **消息载荷**：配置 `authToken` 后，插件会将其附加在每条发送帧的 `authToken` 字段中，由服务端校验。
+
+**接收帧：**
+
+```json
+{ "type": "reply", "text": "你好，这是我的回复" }
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `text` / `reply` / `content` | `string` | 回复文本（三选一均可识别）。 |
+
+也支持直接返回纯文本帧。
+
+> **提示**：插件使用 Node.js 22 内置的全局 `WebSocket`（无需额外安装 `ws` 包）。
+
+### 与 OpenClaw 的关系
+
+- 微信登录、消息收发（`getUpdates` / `sendMessage`）、CDN 媒体上传下载、typing 状态指示等均保持不变，依旧通过 OpenClaw 的微信后端通信。
+- 仅"生成回复"这一步被替换为你自己的服务。
+- 斜杠指令（`/echo`、`/toggle-debug`）在 `rest`/`ws` 模式下同样有效，不经过外部服务。
+- 鉴权（allowFrom 配对）机制不变：如果已配置 allowFrom，仅授权用户的消息才会转发给外部服务。
+
+### 示例：Python FastAPI 机器人
+
+```python
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+from typing import Optional
+
+app = FastAPI()
+
+class ChatRequest(BaseModel):
+    # 'from' is a Python keyword; use an alias to map the JSON field name
+    from_user: str = Field("", alias="from")
+    body: str
+    contextToken: Optional[str] = None
+    accountId: Optional[str] = None
+    mediaPath: Optional[str] = None
+    mediaType: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+@app.post("/chat")
+async def chat(req: ChatRequest, authorization: str = Header(default="")):
+    # 在这里接入你自己的逻辑（RAG、规则引擎、其他 LLM 等）
+    reply = f"你说了：{req.body}"
+    return {"reply": reply}
+```
+
+## 独立 Node.js 服务器模式（不依赖 OpenClaw 主进程）
+
+除了作为 OpenClaw 插件运行，本项目还可以**作为一个独立的 Node.js 进程**启动，无需安装或运行 OpenClaw 网关。  
+这适合将微信机器人集成到自己的 CI/CD 或 Docker 流程中。
+
+### 前置条件
+
+- Node.js ≥ 22（已安装）
+- 已 clone 本仓库并安装依赖：
+
+```bash
+git clone https://github.com/ntwck/ilink-wechat.git
+cd ilink-wechat
+npm install
+```
+
+### 第一步：扫码登录
+
+```bash
+npm run login
+```
+
+终端会显示一个二维码，用微信扫码后即完成授权。
+
+**凭证存储位置：**
+
+```
+~/.openclaw/
+└── openclaw-weixin/
+    ├── accounts.json               # 已登录账号 ID 索引
+    └── accounts/
+        └── <accountId>.json        # 每个账号的 token 和 baseUrl
+```
+
+**迁移到另一台服务器：** 只需把 `~/.openclaw/openclaw-weixin/` 目录整体复制过去即可（无需重新扫码）：
+
+```bash
+# 在原机器上打包
+tar czf wechat-accounts.tar.gz -C ~/.openclaw openclaw-weixin/
+
+# 在新机器上解压
+mkdir -p ~/.openclaw
+tar xzf wechat-accounts.tar.gz -C ~/.openclaw/
+```
+
+### 第二步：创建配置文件
+
+在**项目根目录**（运行 `npm run serve` 的目录）创建 `ilink-wechat.json`：
+
+```json
+{
+  "provider": {
+    "type": "rest",
+    "endpoint": "http://localhost:8080/chat",
+    "authToken": "your-secret-token",
+    "timeoutMs": 30000,
+    "fallbackMessage": "⚠️ 服务暂时不可用，请稍后再试。"
+  }
+}
+```
+
+> **注意：** 即使你已有 `~/.openclaw/openclaw.json`，也需要单独创建这个文件，因为现有的 `openclaw.json` 中通常没有 `provider` 配置。也可以在 `ilink-wechat.json` 中通过 `accountId` 指定账号（省略则自动使用唯一已登录账号）。
+>
+> 支持 `rest` 和 `ws` 两种 provider，协议格式与"个人机器人模式"一节完全相同。
+
+### 第三步：启动服务器
+
+```bash
+npm run serve
+```
+
+启动后输出：
+
+```
+🤖 ilink-wechat standalone server
+   account : abc123-im-bot
+   provider: rest
+   baseUrl : https://ilinkai.weixin.qq.com
+   logFile : /tmp/openclaw/openclaw-2026-04-15.log
+
+Press Ctrl+C to stop.
+```
+
+### 命令行参考
+
+```bash
+# 扫码登录（保存凭证到 ~/.openclaw）
+npm run login
+
+# 启动服务器
+npm run serve
+
+# 帮助
+node dist/src/server/index.js help
+```
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `OPENCLAW_STATE_DIR` | `~/.openclaw` | 凭证和状态的存放目录 |
+| `OPENCLAW_LOG_LEVEL` | `INFO` | 日志级别：`TRACE` `DEBUG` `INFO` `WARN` `ERROR` |
+| `ILINK_CONFIG` | 自动检测 | 配置文件路径（优先级：`$ILINK_CONFIG` > `./ilink-wechat.json` > `~/.openclaw/openclaw.json`） |
+
+### Docker 部署示例
+
+```dockerfile
+FROM node:22-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+# Mount pre-exported credentials directory at /root/.openclaw
+# 1. Run `npm run login` on the host machine first
+# 2. Then `docker-compose up`
+
+CMD ["node", "dist/src/server/index.js", "start"]
+```
+
+`docker-compose.yml`：
+
+```yaml
+services:
+  wechat-bot:
+    build: .
+    volumes:
+      - ~/.openclaw/openclaw-weixin:/root/.openclaw/openclaw-weixin   # 挂载凭证
+      - ./ilink-wechat.json:/app/ilink-wechat.json                    # 挂载配置文件
+    restart: unless-stopped
+```
+
+### 多账号支持
+
+登录多个账号后，在配置文件中指定要使用的账号：
+
+```json
+{
+  "accountId": "abc123-im-bot",
+  "provider": { "type": "rest", "endpoint": "http://localhost:8080/chat" }
+}
+```
+
+如果只登录了一个账号，可省略 `accountId`，服务器会自动使用唯一的那个账号。
+
 ## 卸载
 
 ```bash

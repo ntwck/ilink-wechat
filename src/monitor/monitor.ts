@@ -5,7 +5,9 @@ import { getUpdates } from "../api/api.js";
 import { WeixinConfigManager } from "../api/config-cache.js";
 import { SESSION_EXPIRED_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
 import { processOneMessage } from "../messaging/process-message.js";
-import { getWeixinRuntime, waitForWeixinRuntime } from "../runtime.js";
+import { createReplyProvider } from "../providers/index.js";
+import type { ReplyProvider } from "../providers/types.js";
+import { waitForWeixinRuntime } from "../runtime.js";
 import { getSyncBufFilePath, loadGetUpdatesBuf, saveGetUpdatesBuf } from "../storage/sync-buf.js";
 import { logger } from "../util/logger.js";
 import type { Logger } from "../util/logger.js";
@@ -49,6 +51,21 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   const log = opts.runtime?.log ?? (() => {});
   const errLog = opts.runtime?.error ?? ((m: string) => log(m));
   const aLog: Logger = logger.withAccount(accountId);
+
+  // Resolve external reply provider (if configured)
+  const section = config.channels?.["openclaw-weixin"] as Record<string, unknown> | undefined;
+  let replyProvider: ReplyProvider | undefined;
+  try {
+    replyProvider = createReplyProvider(section?.provider);
+    if (replyProvider) {
+      aLog.info(`[monitor] external reply provider: type=${replyProvider.type}`);
+      log(`[weixin] external reply provider enabled: type=${replyProvider.type}`);
+    }
+  } catch (err) {
+    aLog.error(`[monitor] failed to create reply provider: ${String(err)}`);
+    errLog(`[weixin] invalid provider config: ${String(err)}`);
+    throw err;
+  }
 
   aLog.info(`waiting for Weixin runtime...`);
   let channelRuntime: PluginRuntime["channel"];
@@ -178,6 +195,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           typingTicket: cachedConfig.typingTicket,
           log: opts.runtime?.log ?? (() => {}),
           errLog,
+          replyProvider,
         });
       }
     } catch (err) {
