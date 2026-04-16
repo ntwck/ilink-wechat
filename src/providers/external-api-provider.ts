@@ -135,10 +135,15 @@ export class RestReplyProvider implements ReplyProvider {
     } catch (err) {
       clearTimeout(t);
       if ((err as { name?: string }).name === "AbortError") {
-        logger.error(`[external-rest/async] Ack timed out after ${ackTimeoutMs}ms`);
-      } else {
-        logger.error(`[external-rest/async] Fetch error: ${String(err)}`);
+        // ACK timed out, but the external server may have already received the POST
+        // and will still call back.  Return the pending ID so no fallback is sent
+        // immediately; the callback (or the registry TTL) will handle the outcome.
+        logger.warn(
+          `[external-rest/async] Ack timed out after ${ackTimeoutMs}ms — keeping pre-registered context, waiting for callback`,
+        );
+        return { pendingCallbackId: requestId };
       }
+      logger.error(`[external-rest/async] Fetch error: ${String(err)}`);
       return { text: this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE };
     }
 

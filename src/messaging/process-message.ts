@@ -164,6 +164,10 @@ async function dispatchWithExternalProvider(
   // onAsyncRequestId (REST async mode).  When true the registration block below
   // is skipped to avoid an unnecessary overwrite.
   let asyncContextPreRegistered = false;
+  // The requestId surfaced by onAsyncRequestId, kept so we can clean up the
+  // pre-registered entry when the provider returns an error response instead of
+  // a pendingCallbackId (e.g. non-2xx ACK or network failure).
+  let preRegisteredRequestId: string | undefined;
   try {
     response = await deps.replyProvider.generateReply({
       from: to,
@@ -177,6 +181,7 @@ async function dispatchWithExternalProvider(
       // still finds the context in the registry.
       onAsyncRequestId: (requestId) => {
         asyncContextPreRegistered = true;
+        preRegisteredRequestId = requestId;
         callbackRegistry.register(requestId, {
           to,
           baseUrl: deps.baseUrl,
@@ -201,6 +206,17 @@ async function dispatchWithExternalProvider(
         body: { ilink_user_id: to, typing_ticket: deps.typingTicket, status: TypingStatus.CANCEL },
       }).catch((err: unknown) => deps.log(`[weixin] typing stop error: ${String(err)}`));
     }
+  }
+
+  // If the provider pre-registered a context but then returned an error response
+  // (e.g. non-2xx ACK or network failure) instead of a pendingCallbackId, remove
+  // the orphaned registry entry.  This prevents a future spurious reply if the
+  // external server somehow still calls back after we have already sent the fallback.
+  if (asyncContextPreRegistered && !response.pendingCallbackId && preRegisteredRequestId) {
+    callbackRegistry.remove(preRegisteredRequestId);
+    logger.info(
+      `[external-provider] async mode: removed pre-registered context after error requestId=${preRegisteredRequestId}`,
+    );
   }
 
   // Async callback mode: the external server has acknowledged the request.

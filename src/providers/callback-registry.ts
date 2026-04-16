@@ -46,6 +46,11 @@ class CallbackRegistry {
     return entry;
   }
 
+  /** Remove a specific entry by requestId (e.g. when an async POST fails before any callback). */
+  remove(requestId: string): void {
+    this.pending.delete(requestId);
+  }
+
   /** Remove all expired entries (called periodically by the callback server). */
   cleanup(): void {
     const now = Date.now();
