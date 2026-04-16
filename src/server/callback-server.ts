@@ -116,6 +116,9 @@ export function startCallbackServer(cfg: CallbackServerConfig = {}): CallbackSer
         return;
       }
 
+      logger.debug(
+        `[callback-server] looking up requestId=${requestId} registry_size=${callbackRegistry.size()}`,
+      );
       const ctx = callbackRegistry.get(requestId);
       if (!ctx) {
         logger.warn(`[callback-server] unknown or expired requestId=${requestId}`);
