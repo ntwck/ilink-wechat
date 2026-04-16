@@ -160,6 +160,10 @@ async function dispatchWithExternalProvider(
   }
 
   let response: import("../providers/types.js").ExternalReplyResponse;
+  // Tracks whether the provider already pre-registered the callback context via
+  // onAsyncRequestId (REST async mode).  When true the registration block below
+  // is skipped to avoid an unnecessary overwrite.
+  let asyncContextPreRegistered = false;
   try {
     response = await deps.replyProvider.generateReply({
       from: to,
@@ -168,6 +172,22 @@ async function dispatchWithExternalProvider(
       mediaPath,
       mediaType,
       accountId: deps.accountId,
+      // Pre-register the callback context before the POST is dispatched so that an
+      // external server that calls back before (or concurrently with) the HTTP ACK
+      // still finds the context in the registry.
+      onAsyncRequestId: (requestId) => {
+        asyncContextPreRegistered = true;
+        callbackRegistry.register(requestId, {
+          to,
+          baseUrl: deps.baseUrl,
+          token: deps.token ?? "",
+          contextToken,
+          accountId: deps.accountId,
+        });
+        logger.info(
+          `[external-provider] async mode: pre-registered callback context requestId=${requestId} to=${to}`,
+        );
+      },
     });
   } catch (err) {
     logger.error(`[external-provider] generateReply threw: ${String(err)}`);
@@ -184,15 +204,18 @@ async function dispatchWithExternalProvider(
   }
 
   // Async callback mode: the external server has acknowledged the request.
-  // Register the WeChat send-context so the callback server can deliver the reply later.
+  // Register the WeChat send-context so the callback server can deliver the reply later
+  // (skipped when already pre-registered via onAsyncRequestId above).
   if (response.pendingCallbackId) {
-    callbackRegistry.register(response.pendingCallbackId, {
-      to,
-      baseUrl: deps.baseUrl,
-      token: deps.token ?? "",
-      contextToken,
-      accountId: deps.accountId,
-    });
+    if (!asyncContextPreRegistered) {
+      callbackRegistry.register(response.pendingCallbackId, {
+        to,
+        baseUrl: deps.baseUrl,
+        token: deps.token ?? "",
+        contextToken,
+        accountId: deps.accountId,
+      });
+    }
     logger.info(
       `[external-provider] async mode: registered pending callback requestId=${response.pendingCallbackId} to=${to}`,
     );

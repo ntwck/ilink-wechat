@@ -91,6 +91,11 @@ export class RestReplyProvider implements ReplyProvider {
 
   private async generateReplyAsync(req: ExternalReplyRequest): Promise<ExternalReplyResponse> {
     const requestId = generateId("cb");
+
+    // Pre-register before the POST so the callback context is available even if the
+    // external server calls back before (or concurrently with) the HTTP ACK.
+    req.onAsyncRequestId?.(requestId);
+
     const payload = this.buildRequestBody(req, requestId);
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.cfg.authToken?.trim()) {
@@ -103,8 +108,10 @@ export class RestReplyProvider implements ReplyProvider {
     );
 
     // Fire and forget — we only wait long enough to confirm the server accepted the request.
+    // Use the full configured timeoutMs (no arbitrary cap) so that user-configured values
+    // such as timeoutMs:30000 are fully respected.
     const controller = new AbortController();
-    const ackTimeoutMs = Math.min(this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS, 10_000);
+    const ackTimeoutMs = this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const t = setTimeout(() => controller.abort(), ackTimeoutMs);
 
     try {

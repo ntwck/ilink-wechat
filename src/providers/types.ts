@@ -19,6 +19,14 @@ export interface ExternalReplyRequest {
   mediaType?: string;
   /** Bot account ID */
   accountId: string;
+  /**
+   * Optional hook called by REST providers operating in async mode, invoked with
+   * the requestId *before* the POST is dispatched.  Callers can use this to
+   * pre-register the callback context so that an external server which calls
+   * back before (or concurrently with) the HTTP ACK can still be matched to the
+   * correct WeChat conversation.
+   */
+  onAsyncRequestId?: (requestId: string) => void;
 }
 
 /** Reply produced by an external provider. */
