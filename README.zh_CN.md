@@ -483,11 +483,32 @@ npm install
 npm run login
 ```
 
-终端会显示一个二维码，用微信扫码后即完成授权。凭证保存在 `~/.openclaw/openclaw-weixin/accounts/`。
+终端会显示一个二维码，用微信扫码后即完成授权。
+
+**凭证存储位置：**
+
+```
+~/.openclaw/
+└── openclaw-weixin/
+    ├── accounts.json               # 已登录账号 ID 索引
+    └── accounts/
+        └── <accountId>.json        # 每个账号的 token 和 baseUrl
+```
+
+**迁移到另一台服务器：** 只需把 `~/.openclaw/openclaw-weixin/` 目录整体复制过去即可（无需重新扫码）：
+
+```bash
+# 在原机器上打包
+tar czf wechat-accounts.tar.gz -C ~/.openclaw openclaw-weixin/
+
+# 在新机器上解压
+mkdir -p ~/.openclaw
+tar xzf wechat-accounts.tar.gz -C ~/.openclaw/
+```
 
 ### 第二步：创建配置文件
 
-在项目根目录创建 `ilink-wechat.json`（或使用已有的 `~/.openclaw/openclaw.json`）：
+在**项目根目录**（运行 `npm run serve` 的目录）创建 `ilink-wechat.json`：
 
 ```json
 {
@@ -501,6 +522,8 @@ npm run login
 }
 ```
 
+> **注意：** 即使你已有 `~/.openclaw/openclaw.json`，也需要单独创建这个文件，因为现有的 `openclaw.json` 中通常没有 `provider` 配置。也可以在 `ilink-wechat.json` 中通过 `accountId` 指定账号（省略则自动使用唯一已登录账号）。
+>
 > 支持 `rest` 和 `ws` 两种 provider，协议格式与"个人机器人模式"一节完全相同。
 
 ### 第三步：启动服务器
@@ -552,8 +575,9 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# 将预先导出的凭证目录挂载到 /root/.openclaw
-# 先在宿主机登录：npm run login，再 docker-compose up
+# Mount pre-exported credentials directory at /root/.openclaw
+# 1. Run `npm run login` on the host machine first
+# 2. Then `docker-compose up`
 
 CMD ["node", "dist/src/server/index.js", "start"]
 ```
@@ -565,9 +589,8 @@ services:
   wechat-bot:
     build: .
     volumes:
-      - ~/.openclaw:/root/.openclaw   # 挂载已登录凭证
-    environment:
-      - ILINK_CONFIG=/root/.openclaw/openclaw.json
+      - ~/.openclaw/openclaw-weixin:/root/.openclaw/openclaw-weixin   # 挂载凭证
+      - ./ilink-wechat.json:/app/ilink-wechat.json                    # 挂载配置文件
     restart: unless-stopped
 ```
 

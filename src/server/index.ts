@@ -120,10 +120,26 @@ function loadConfig(): StandaloneConfig {
     };
   }
 
-  printError(
-    `Config file ${cfgPath} has no provider configuration.\n` +
-      `Add a "provider" field or "channels.openclaw-weixin.provider" section.`,
-  );
+  // openclaw.json was found but has no provider config for standalone mode.
+  const localPath = path.resolve("ilink-wechat.json");
+  const isOpenClawFallback = cfgPath !== localPath && cfgPath.endsWith("openclaw.json");
+  if (isOpenClawFallback) {
+    printError(
+      `${cfgPath} exists but has no provider configured for standalone mode.\n\n` +
+        `Create an ilink-wechat.json in the current directory and run again:\n\n` +
+        JSON.stringify(
+          { provider: { type: "rest", endpoint: "http://localhost:8080/chat", authToken: "optional-secret", timeoutMs: 30000 } },
+          null,
+          2,
+        ) +
+        `\n\nThen run: npm run serve`,
+    );
+  } else {
+    printError(
+      `Config file ${cfgPath} has no provider configuration.\n` +
+        `Add a "provider" field or "channels.openclaw-weixin.provider" section.`,
+    );
+  }
   process.exit(1);
 }
 
@@ -137,7 +153,7 @@ function resolveAccountId(preferred?: string): { accountId: string; account: Ret
   if (allIds.length === 0) {
     printError(
       `No WeChat accounts found in ${resolveStateDir()}.\n` +
-        `Run: node --experimental-strip-types src/server/index.ts login`,
+        `Run: npm run login`,
     );
     process.exit(1);
   }
