@@ -83,7 +83,10 @@ export async function runStandaloneMonitor(opts: StandaloneMonitorOpts): Promise
   }
 
   // Minimal OpenClawConfig stub — only the provider section is needed; auth
-  // is handled directly by processOneMessage in standalone mode.
+  // is handled directly by processOneMessage in standalone mode.  The config
+  // object is only passed through so processOneMessage can forward it to the
+  // OpenClaw path, which is never reached in standalone mode (the replyProvider
+  // branch returns early before any config property is accessed).
   const configStub = {} as import("openclaw/plugin-sdk/core").OpenClawConfig;
 
   const configManager = new WeixinConfigManager({ baseUrl, token }, log);

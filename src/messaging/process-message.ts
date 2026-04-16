@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
@@ -101,7 +102,7 @@ async function standaloneMediaSave(
     throw new Error(`standaloneMediaSave: media too large (${buffer.length} > ${maxBytes} bytes)`);
   }
 
-  const filename = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const filename = `${Date.now()}-${randomBytes(8).toString("hex")}.${ext}`;
   const filePath = path.join(dir, filename);
   fs.writeFileSync(filePath, buffer);
   logger.debug(`standaloneMediaSave: saved ${buffer.length}B to ${filePath}`);
@@ -394,7 +395,14 @@ export async function processOneMessage(
     // Standalone mode: simple file-based allowFrom list (no OpenClaw runtime).
     const allowFrom = readFrameworkAllowFromList(deps.accountId);
     const fallbackUserId = loadWeixinAccount(deps.accountId)?.userId?.trim();
-    const effectiveList = allowFrom.length > 0 ? allowFrom : (fallbackUserId ? [fallbackUserId] : []);
+    let effectiveList: string[];
+    if (allowFrom.length > 0) {
+      effectiveList = allowFrom;
+    } else if (fallbackUserId) {
+      effectiveList = [fallbackUserId];
+    } else {
+      effectiveList = [];
+    }
     senderAllowedForCommands = effectiveList.length === 0 || effectiveList.includes(senderId);
     commandAuthorized = senderAllowedForCommands;
     if (!senderAllowedForCommands) {

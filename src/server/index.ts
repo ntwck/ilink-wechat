@@ -169,6 +169,8 @@ function resolveAccountId(preferred?: string): { accountId: string; account: Ret
 // login command
 // ---------------------------------------------------------------------------
 
+const QR_LOGIN_TIMEOUT_MS = 480_000; // 8 minutes
+
 async function runLogin(): Promise<void> {
   print(`\n📱 Starting WeChat QR login...\n`);
 
@@ -203,7 +205,7 @@ async function runLogin(): Promise<void> {
   const waitResult = await waitForWeixinLogin({
     sessionKey: startResult.sessionKey,
     apiBaseUrl: DEFAULT_BASE_URL,
-    timeoutMs: 480_000,
+    timeoutMs: QR_LOGIN_TIMEOUT_MS,
     verbose: true,
     botType: DEFAULT_ILINK_BOT_TYPE,
   });
