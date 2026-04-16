@@ -208,6 +208,10 @@ async function dispatchWithExternalProvider(
     }
   }
 
+  logger.debug(
+    `[external-provider] response: text=${response.text != null ? `len=${response.text.length}` : "none"} mediaUrl=${response.mediaUrl ? "present" : "none"} pendingCallbackId=${response.pendingCallbackId ?? "none"}`,
+  );
+
   // If the provider pre-registered a context but then returned an error response
   // (e.g. non-2xx ACK or network failure) instead of a pendingCallbackId, remove
   // the orphaned registry entry.  This prevents a future spurious reply if the
@@ -321,6 +325,9 @@ export async function processOneMessage(
   const debugTs: Record<string, number> = { received: receivedAt };
 
   const textBody = extractTextBody(full.item_list);
+  logger.debug(
+    `[process] received: msgId=${full.message_id ?? "?"} seq=${full.seq ?? "?"} from=${full.from_user_id ?? "?"} bodyLen=${textBody.length} itemTypes=[${full.item_list?.map((i) => i.type).join(",") ?? "none"}]`,
+  );
   if (textBody.startsWith("/")) {
     const slashResult = await handleSlashCommand(textBody, {
       to: full.from_user_id ?? "",
@@ -382,6 +389,7 @@ export async function processOneMessage(
   const mediaItem = mainMediaItem ?? refMediaItem;
   if (mediaItem) {
     const label = refMediaItem ? "ref" : "inbound";
+    logger.debug(`[process] mediaItem found: type=${mediaItem.type} label=${label}`);
     // Standalone mode uses a simple temp-dir save when channelRuntime is unavailable.
     const saveMedia = deps.channelRuntime?.media.saveMediaBuffer ?? standaloneMediaSave;
     const downloaded = await downloadMediaFromItem(mediaItem, {
@@ -394,6 +402,7 @@ export async function processOneMessage(
     Object.assign(mediaOpts, downloaded);
   }
   const mediaDownloadMs = Date.now() - mediaDownloadStart;
+  logger.debug(`[process] mediaDownload: found=${Boolean(mediaItem)} cost=${mediaDownloadMs}ms`);
 
   if (debug) {
     debugTrace.push(mediaItem

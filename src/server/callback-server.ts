@@ -86,6 +86,7 @@ export function startCallbackServer(cfg: CallbackServerConfig = {}): CallbackSer
         respond(401, { ok: false, error: "unauthorized" });
         return;
       }
+      logger.debug(`[callback-server] auth OK`);
     }
 
     // Read body.
@@ -99,6 +100,7 @@ export function startCallbackServer(cfg: CallbackServerConfig = {}): CallbackSer
         respond(400, { ok: false, error: "invalid JSON body" });
         return;
       }
+      logger.debug(`[callback-server] body parsed: keys=[${Object.keys(body).join(",")}]`);
 
       const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
       if (!requestId) {

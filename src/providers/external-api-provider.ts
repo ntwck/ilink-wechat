@@ -130,6 +130,7 @@ export class RestReplyProvider implements ReplyProvider {
         // Ack failed — fall back to error message rather than hanging forever.
         return { text: this.cfg.fallbackMessage ?? DEFAULT_FALLBACK_MESSAGE };
       }
+      logger.debug(`[external-rest/async] ACK HTTP ${res.status} from ${this.cfg.endpoint}`);
       // Drain the ack response body (typically "{"ok":true}") without blocking.
       res.text().catch(() => undefined);
     } catch (err) {
@@ -249,6 +250,7 @@ export class RestReplyProvider implements ReplyProvider {
         );
         return { text: fallbackMessage };
       }
+      logger.debug(`[external-rest] parseResponse: textLen=${text?.trim().length ?? 0} hasMediaUrl=${Boolean(mediaUrl)}`);
       return { text: text?.trim(), mediaUrl };
     } catch {
       // Treat the response as plain text
