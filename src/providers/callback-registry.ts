@@ -26,8 +26,8 @@ export type PendingCallbackContext = {
   expiresAt: number;
 };
 
-/** Entries are kept for up to 10 minutes then silently dropped. */
-const ENTRY_TTL_MS = 10 * 60 * 1_000;
+/** Entries are kept for up to 1 hour then silently dropped. */
+const ENTRY_TTL_MS = 60 * 60 * 1_000;
 
 class CallbackRegistry {
   private readonly pending = new Map<string, PendingCallbackContext>();
@@ -37,12 +37,16 @@ class CallbackRegistry {
     this.pending.set(requestId, { ...ctx, expiresAt: Date.now() + ENTRY_TTL_MS });
   }
 
-  /** Retrieve (and remove) the context for a given requestId. Returns undefined if not found or expired. */
+  /** Retrieve the context for a given requestId WITHOUT removing it, so the same
+   *  requestId can be used across multiple callbacks within the TTL window.
+   *  Returns undefined if not found or expired. */
   consume(requestId: string): PendingCallbackContext | undefined {
     const entry = this.pending.get(requestId);
     if (!entry) return undefined;
-    this.pending.delete(requestId);
-    if (Date.now() > entry.expiresAt) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      this.pending.delete(requestId);
+      return undefined;
+    }
     return entry;
   }
 
