@@ -37,12 +37,16 @@ class CallbackRegistry {
     this.pending.set(requestId, { ...ctx, expiresAt: Date.now() + ENTRY_TTL_MS });
   }
 
-  /** Retrieve (and remove) the context for a given requestId. Returns undefined if not found or expired. */
-  consume(requestId: string): PendingCallbackContext | undefined {
+  /** Retrieve the context for a given requestId WITHOUT removing it, so the same
+   *  requestId can be reused across multiple callbacks within the TTL window.
+   *  Returns undefined if not found or expired. */
+  get(requestId: string): PendingCallbackContext | undefined {
     const entry = this.pending.get(requestId);
     if (!entry) return undefined;
-    this.pending.delete(requestId);
-    if (Date.now() > entry.expiresAt) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      this.pending.delete(requestId);
+      return undefined;
+    }
     return entry;
   }
 
