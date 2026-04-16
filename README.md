@@ -1,7 +1,5 @@
 # 微信ClawBot RESTful异步通信版
 
-[English](./README.md)
-
 OpenClaw 的微信渠道插件，支持通过扫码完成登录授权 [微信ClawBot English](./README.wx.md) [微信ClawBot 中文](./README.wx.zh_CN.md)。
 
 ## 独立 Node.js 服务器模式（不依赖 OpenClaw 主进程）
