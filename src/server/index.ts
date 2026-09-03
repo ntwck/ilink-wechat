@@ -59,6 +59,13 @@ type ProviderConfig = {
   callbackPort?: number;
   callbackPath?: string;
   callbackAuthToken?: string;
+  clipboardSync?: {
+    enabled?: boolean;
+    allowedClientIds?: string[];
+    syncTypes?: Array<"text" | "media">;
+    maxTextBytes?: number;
+    maxEventLogEntries?: number;
+  };
 };
 
 type StandaloneConfig = {
@@ -294,13 +301,17 @@ async function runStart(): Promise<void> {
   print(`   baseUrl : ${baseUrl}`);
   print(`   logFile : ${logger.getLogFilePath()}`);
 
-  // Start the async callback server if the provider is configured for async mode.
+  // Start callback server for async reply mode and/or clipboard sync endpoint.
   let callbackHandle: import("./callback-server.js").CallbackServerHandle | undefined;
-  if (cfg.provider.mode === "async") {
+  const clipboardEnabled = cfg.provider.clipboardSync?.enabled === true;
+  if (cfg.provider.mode === "async" || clipboardEnabled) {
     callbackHandle = startCallbackServer({
       port: cfg.provider.callbackPort,
       path: cfg.provider.callbackPath,
       authToken: cfg.provider.callbackAuthToken,
+      accountId,
+      stateDir: resolveStateDir(),
+      clipboardSync: cfg.provider.clipboardSync,
     });
   }
 

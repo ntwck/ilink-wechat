@@ -21,13 +21,23 @@
  *   404:      { "ok": false, "error": "unknown or expired requestId" }
  *   405:      { "ok": false, "error": "method not allowed" }
  *   500:      { "ok": false, "error": "..." }  — internal error
+ *
+ * Clipboard sync events (optional, same callback endpoint):
+ *   { "eventType":"set","accountId":"...","clientId":"...","text":"...","version":1,"timestamp":123 }
+ *   { "eventType":"get","accountId":"...","clientId":"...","cursor":12 }
+ *   { "eventType":"ack","accountId":"...","clientId":"...","cursor":15 }
  */
 
 import http from "node:http";
 
+import {
+  ClipboardSyncService,
+  parseClipboardSyncConfig,
+} from "../clipboard/service.js";
 import { callbackRegistry } from "../providers/callback-registry.js";
 import { sendMessageWeixin } from "../messaging/send.js";
 import { logger } from "../util/logger.js";
+import { truncate } from "../util/redact.js";
 
 export type CallbackServerConfig = {
   /** Port to listen on (default: 8765). */
@@ -39,6 +49,12 @@ export type CallbackServerConfig = {
    * Requests without this header receive 401.
    */
   authToken?: string;
+  /** Account scope for clipboard sync and request validation. */
+  accountId?: string;
+  /** State root dir, usually resolveStateDir(). */
+  stateDir?: string;
+  /** Clipboard sync runtime configuration. */
+  clipboardSync?: unknown;
 };
 
 export type CallbackServerHandle = {
@@ -55,6 +71,13 @@ export function startCallbackServer(cfg: CallbackServerConfig = {}): CallbackSer
   const port = cfg.port ?? DEFAULT_PORT;
   const cbPath = cfg.path ?? DEFAULT_PATH;
   const authToken = cfg.authToken?.trim() || undefined;
+  const clipboard = cfg.accountId && cfg.stateDir
+    ? new ClipboardSyncService(
+        cfg.accountId,
+        cfg.stateDir,
+        parseClipboardSyncConfig(cfg.clipboardSync),
+      )
+    : undefined;
 
   // Periodically clean up expired registry entries (every minute).
   const cleanupInterval = setInterval(() => callbackRegistry.cleanup(), 60_000);
@@ -101,6 +124,61 @@ export function startCallbackServer(cfg: CallbackServerConfig = {}): CallbackSer
         return;
       }
       logger.debug(`[callback-server] body parsed: keys=[${Object.keys(body).join(",")}]`);
+
+      const eventType = typeof body.eventType === "string" ? body.eventType.trim() : "";
+      if (eventType === "set" || eventType === "get" || eventType === "ack") {
+        if (!clipboard || !clipboard.isEnabled()) {
+          respond(400, { ok: false, error: "clipboard sync disabled" });
+          return;
+        }
+        const accountId = typeof body.accountId === "string" ? body.accountId.trim() : "";
+        if (!accountId || accountId !== cfg.accountId) {
+          respond(403, { ok: false, error: "account mismatch" });
+          return;
+        }
+        const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
+        try {
+          if (eventType === "set") {
+            const text = typeof body.text === "string" ? body.text : "";
+            const version =
+              typeof body.version === "number" ? body.version : undefined;
+            const timestamp =
+              typeof body.timestamp === "number" ? body.timestamp : undefined;
+            const result = clipboard.handleSet({ clientId, text, version, timestamp });
+            respond(200, result);
+            logger.info(
+              `[callback-server] clipboard set account=${accountId} client=${clientId} applied=${String(result.applied)} version=${result.state.version} text=${truncate(result.state.text, 40)}`,
+            );
+            return;
+          }
+          if (eventType === "get") {
+            const cursor =
+              typeof body.cursor === "number" ? body.cursor : undefined;
+            const result = clipboard.handleGet({ clientId, cursor });
+            respond(200, result);
+            logger.debug(
+              `[callback-server] clipboard get account=${accountId} client=${clientId} cursor=${result.cursor} events=${result.events.length}`,
+            );
+            return;
+          }
+          const cursor = typeof body.cursor === "number" ? body.cursor : NaN;
+          if (!Number.isFinite(cursor)) {
+            respond(400, { ok: false, error: "missing cursor" });
+            return;
+          }
+          const result = clipboard.handleAck({ clientId, cursor });
+          respond(200, result);
+          logger.debug(
+            `[callback-server] clipboard ack account=${accountId} client=${clientId} cursor=${result.ackedCursor}`,
+          );
+          return;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          respond(400, { ok: false, error: msg });
+          logger.warn(`[callback-server] clipboard ${eventType} rejected: ${msg}`);
+          return;
+        }
+      }
 
       const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
       if (!requestId) {
