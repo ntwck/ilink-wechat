@@ -48,18 +48,6 @@ const baseExternalProviderSchema = z.object({
    * Defaults to "⚠️ 服务暂时不可用，请稍后再试。"
    */
   fallbackMessage: z.string().optional(),
-  /**
-   * Multi-client clipboard sync settings (account-level).
-   */
-  clipboardSync: z
-    .object({
-      enabled: z.boolean().optional(),
-      allowedClientIds: z.array(z.string()).optional(),
-      syncTypes: z.array(z.enum(["text", "media"])).optional(),
-      maxTextBytes: z.number().int().positive().optional(),
-      maxEventLogEntries: z.number().int().positive().optional(),
-    })
-    .optional(),
 });
 
 const openclawProviderSchema = z.object({

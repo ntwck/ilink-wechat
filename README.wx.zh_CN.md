@@ -532,14 +532,7 @@ tar xzf wechat-accounts.tar.gz -C ~/.openclaw/
     "mode": "async",
     "callbackPort": 8765,
     "callbackPath": "/callback",
-    "callbackAuthToken": "请自行设置一个随机字符串，确保回调接口安全",
-    "clipboardSync": {
-      "enabled": true,
-      "allowedClientIds": ["desktop", "laptop", "mobile"],
-      "syncTypes": ["text"],
-      "maxTextBytes": 65536,
-      "maxEventLogEntries": 5000
-    }
+    "callbackAuthToken": "请自行设置一个随机字符串，确保回调接口安全"
   }
 }
 ```
@@ -547,49 +540,6 @@ tar xzf wechat-accounts.tar.gz -C ~/.openclaw/
 > **注意：** 即使你已有 `~/.openclaw/openclaw.json`，也需要单独创建这个文件，因为现有的 `openclaw.json` 中通常没有 `provider` 配置。也可以在 `ilink-wechat.json` 中通过 `accountId` 指定账号（省略则自动使用唯一已登录账号）。
 >
 > 支持 `rest` 和 `ws` 两种 provider，协议格式与"个人机器人模式"一节完全相同。
-
-### 多客户端剪切板同步（账号级，可选）
-
-当 `provider.clipboardSync.enabled=true` 时，回调服务会在同一账号内维护共享剪切板中心状态，并支持多客户端增量同步。
-
-回调地址与异步回复复用：`http://<bot-host>:<callbackPort><callbackPath>`  
-请求头：`Authorization: <callbackAuthToken>`（若配置）
-
-#### 事件协议
-
-- `eventType = "set"`：写入剪切板（文本）
-- `eventType = "get"`：按游标拉取增量更新
-- `eventType = "ack"`：确认已消费到某个游标
-
-通用字段：
-
-- `accountId`：必须与当前机器人账号一致
-- `clientId`：客户端唯一标识（可被 `allowedClientIds` 白名单限制）
-- `version` + `timestamp`：用于幂等与乱序处理（最新写入生效）
-
-`set` 示例：
-
-```json
-{
-  "eventType": "set",
-  "accountId": "abc123-im-bot",
-  "clientId": "desktop",
-  "text": "hello clipboard",
-  "version": 12,
-  "timestamp": 1757000000000
-}
-```
-
-`get` 示例：
-
-```json
-{
-  "eventType": "get",
-  "accountId": "abc123-im-bot",
-  "clientId": "mobile",
-  "cursor": 10
-}
-```
 
 ### 第三步：启动服务器
 
