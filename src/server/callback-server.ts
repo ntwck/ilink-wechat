@@ -174,7 +174,15 @@ export function startCallbackServer(cfg: CallbackServerConfig = {}): CallbackSer
           return;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          respond(400, { ok: false, error: msg });
+          let safeError = "invalid clipboard request";
+          if (msg === "client not allowed") safeError = "client not allowed";
+          else if (msg === "clientId is required") safeError = "clientId is required";
+          else if (msg === "text sync is disabled") safeError = "text sync is disabled";
+          else if (msg === "clipboard sync disabled") safeError = "clipboard sync disabled";
+          else if (msg.startsWith("clipboard text too large")) {
+            safeError = "clipboard text too large";
+          }
+          respond(400, { ok: false, error: safeError });
           logger.warn(`[callback-server] clipboard ${eventType} rejected: ${msg}`);
           return;
         }
