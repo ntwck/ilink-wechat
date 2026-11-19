@@ -30,7 +30,6 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 
@@ -251,7 +250,7 @@ async function runLogin(): Promise<void> {
     print(`\n下一步：运行以下命令启动机器人：`);
     print(`  npm run serve\n`);
     print(`  (或: node dist/src/server/index.js start)\n`);
-  } else if ((waitResult as { alreadyConnected?: boolean }).alreadyConnected) {
+  } else if (waitResult.alreadyConnected) {
     // binded_redirect: the scanned bot is already bound to this instance and the
     // existing local credentials remain valid — treat as success (official 2.4.3 fix).
     print(`\n✅ ${waitResult.message}`);

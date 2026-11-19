@@ -264,11 +264,28 @@ async function dispatchWithExternalProvider(
     return f.feed(replyText) + f.flush();
   })();
 
+  // Outbound message_sending hook (official 2.1.9+ parity for the provider path;
+  // no-ops in standalone mode where no gateway hook runner exists).
+  const runId = randomUUID();
+  const sendingResult = await applyWeixinMessageSendingHook({
+    to,
+    text: filteredText,
+    accountId: deps.accountId,
+    mediaUrl: replyMediaUrl || undefined,
+    runId,
+  });
+  if (sendingResult.cancelled) {
+    logger.info(`[external-provider] outbound cancelled by message_sending hook to=${to}`);
+    return;
+  }
+  const text = sendingResult.text;
+
   const sendOpts = {
     baseUrl: deps.baseUrl,
     token: deps.token,
     contextToken,
     accountId: deps.accountId,
+    runId,
   };
 
   try {
@@ -287,22 +304,33 @@ async function dispatchWithExternalProvider(
         logger.debug(`[external-provider] remote image downloaded to ${filePath}`);
       } else {
         logger.warn(`[external-provider] unrecognised mediaUrl scheme, falling back to text-only`);
-        await sendMessageWeixin({ to, text: filteredText, opts: sendOpts });
+        await sendMessageWeixin({ to, text, opts: sendOpts });
+        emitWeixinMessageSent({ to, content: text, success: true, accountId: deps.accountId, runId });
         return;
       }
       await sendWeixinMediaFile({
         filePath,
         to,
-        text: filteredText,
+        text,
         opts: sendOpts,
         cdnBaseUrl: deps.cdnBaseUrl,
       });
+      emitWeixinMessageSent({ to, content: text, success: true, accountId: deps.accountId, runId });
       logger.info(`[external-provider] media sent OK to=${to}`);
     } else {
-      await sendMessageWeixin({ to, text: filteredText, opts: sendOpts });
+      await sendMessageWeixin({ to, text, opts: sendOpts });
+      emitWeixinMessageSent({ to, content: text, success: true, accountId: deps.accountId, runId });
       logger.info(`[external-provider] text sent OK to=${to}`);
     }
   } catch (err) {
+    emitWeixinMessageSent({
+      to,
+      content: text,
+      success: false,
+      error: String(err),
+      accountId: deps.accountId,
+      runId,
+    });
     logger.error(`[external-provider] send FAILED to=${to} err=${String(err)}`);
     const errMsg = err instanceof Error ? err.message : String(err);
     await sendWeixinErrorNotice({
@@ -549,11 +577,6 @@ export async function processOneMessage(
     return;
   }
 
-  if (debug) {
-    debugTrace.push(`│ route: pending`);
-    debugTs.preDispatch = Date.now();
-  }
-
   const route = deps.channelRuntime.routing.resolveAgentRoute({
     cfg: deps.config,
     channel: "openclaw-weixin",
@@ -571,6 +594,7 @@ export async function processOneMessage(
 
   if (debug) {
     debugTrace.push(`│ route: agent=${route.agentId ?? "none"} session=${route.sessionKey ?? "none"}`);
+    debugTs.preDispatch = Date.now();
   }
   // Propagate the resolved session key into ctx so dispatchReplyFromConfig uses
   // the correct session (matching the dmScope from config) instead of falling back

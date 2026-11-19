@@ -3,8 +3,8 @@
  *
  * This module is the core of the standalone server mode.  It mirrors
  * `monitorWeixinProvider` from `src/monitor/monitor.ts` but omits the
- * `waitForWeixinRuntime()` dependency so the bot can run as a plain Node.js
- * process without OpenClaw installed or running.
+ * gateway-injected `channelRuntime` dependency so the bot can run as a plain
+ * Node.js process without OpenClaw installed or running.
  *
  * Constraints / differences from the OpenClaw-hosted monitor:
  *   - A `replyProvider` (REST or WebSocket) MUST be supplied — the OpenClaw AI

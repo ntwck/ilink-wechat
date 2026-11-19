@@ -468,7 +468,7 @@ async def chat(req: ChatRequest, authorization: str = Header(default="")):
 
 ### 前置条件
 
-- Node.js ≥ 22（已安装）
+- Node.js ≥ 22.13.0（已安装）
 - 已 clone 本仓库并安装依赖：
 
 ```bash
@@ -513,7 +513,7 @@ tar xzf wechat-accounts.tar.gz -C ~/.openclaw/
 ```json
 {
   "id": "openclaw-weixin",
-  "version": "2.1.8",
+  "version": "2.4.10",
   "channels": [
     "openclaw-weixin"
   ],
@@ -652,3 +652,5 @@ openclaw plugins install @tencent-weixin/openclaw-weixin@legacy
 openclaw config set plugins.entries.openclaw-weixin.enabled true
 openclaw gateway restart
 ```
+
+> AI生成
