@@ -9,7 +9,7 @@ OpenClaw 的微信渠道插件，支持通过扫码完成登录授权 [微信Cla
 
 ### 前置条件
 
-- Node.js ≥ 22（已安装）
+- Node.js ≥ 22.13.0（已安装）
 - 已 clone 本仓库并安装依赖：
 
 ```bash
@@ -54,7 +54,7 @@ tar xzf wechat-accounts.tar.gz -C ~/.openclaw/
 ```json
 {
   "id": "openclaw-weixin",
-  "version": "2.1.8",
+  "version": "2.4.10",
   "channels": [
     "openclaw-weixin"
   ],
@@ -162,3 +162,5 @@ services:
 ```
 
 如果只登录了一个账号，可省略 `accountId`，服务器会自动使用唯一的那个账号。
+
+> AI生成

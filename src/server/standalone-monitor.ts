@@ -3,8 +3,8 @@
  *
  * This module is the core of the standalone server mode.  It mirrors
  * `monitorWeixinProvider` from `src/monitor/monitor.ts` but omits the
- * `waitForWeixinRuntime()` dependency so the bot can run as a plain Node.js
- * process without OpenClaw installed or running.
+ * gateway-injected `channelRuntime` dependency so the bot can run as a plain
+ * Node.js process without OpenClaw installed or running.
  *
  * Constraints / differences from the OpenClaw-hosted monitor:
  *   - A `replyProvider` (REST or WebSocket) MUST be supplied — the OpenClaw AI
@@ -14,9 +14,9 @@
  *   - Status callbacks (`setStatus`) are optional; defaults to console.log.
  */
 
-import { getUpdates } from "../api/api.js";
+import { getUpdates, classifyFetchError } from "../api/api.js";
 import { WeixinConfigManager } from "../api/config-cache.js";
-import { SESSION_EXPIRED_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
+import { STALE_TOKEN_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
 import { restoreContextTokens } from "../messaging/inbound.js";
 import { processOneMessage } from "../messaging/process-message.js";
 import type { ReplyProvider } from "../providers/types.js";
@@ -101,6 +101,9 @@ export async function runStandaloneMonitor(opts: StandaloneMonitorOpts): Promise
         token,
         get_updates_buf: getUpdatesBuf,
         timeoutMs: nextTimeoutMs,
+        // Stop should cancel the in-flight long-poll immediately instead of
+        // waiting for the server-side long-poll timeout.
+        abortSignal,
       });
 
       if (resp.longpolling_timeout_ms != null && resp.longpolling_timeout_ms > 0) {
@@ -112,16 +115,16 @@ export async function runStandaloneMonitor(opts: StandaloneMonitorOpts): Promise
         (resp.errcode !== undefined && resp.errcode !== 0);
 
       if (isApiError) {
-        const isSessionExpired =
-          resp.errcode === SESSION_EXPIRED_ERRCODE || resp.ret === SESSION_EXPIRED_ERRCODE;
+        const isStaleToken =
+          resp.errcode === STALE_TOKEN_ERRCODE || resp.ret === STALE_TOKEN_ERRCODE;
 
-        if (isSessionExpired) {
+        if (isStaleToken) {
           pauseSession(accountId);
           const pauseMs = getRemainingPauseMs(accountId);
           errLog(
-            `[ilink-wechat] session expired (errcode ${SESSION_EXPIRED_ERRCODE}), pausing ${Math.ceil(pauseMs / 60_000)} min`,
+            `[ilink-wechat] bot token is stale (errcode ${STALE_TOKEN_ERRCODE}), pausing ${Math.ceil(pauseMs / 60_000)} min`,
           );
-          aLog.error(`standalone: session expired, pausing ${Math.ceil(pauseMs / 60_000)} min`);
+          aLog.error(`standalone: token stale, pausing ${Math.ceil(pauseMs / 60_000)} min`);
           consecutiveFailures = 0;
           await sleep(pauseMs, abortSignal);
           continue;
@@ -177,8 +180,9 @@ export async function runStandaloneMonitor(opts: StandaloneMonitorOpts): Promise
         return;
       }
       consecutiveFailures += 1;
-      errLog(`[ilink-wechat] error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)}`);
-      aLog.error(`standalone loop error: ${String(err)}`);
+      const classified = classifyFetchError(err);
+      errLog(`[ilink-wechat] error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)} type=${classified.type} description=${classified.description}${classified.code ? ` code=${classified.code}` : ""}`);
+      aLog.error(`standalone loop error: ${String(err)}, type=${classified.type} code=${classified.code ?? "none"}`);
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         consecutiveFailures = 0;
         await sleep(BACKOFF_DELAY_MS, abortSignal);

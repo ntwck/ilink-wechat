@@ -1,14 +1,9 @@
-import fs from "node:fs";
-import { randomBytes } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
 
-import { createTypingCallbacks } from "openclaw/plugin-sdk/channel-runtime";
-import {
-  resolveSenderCommandAuthorizationWithRuntime,
-  resolveDirectDmAuthorizationOutcome,
-} from "openclaw/plugin-sdk/command-auth";
-import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/infra-runtime";
+import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 
 import { sendTyping } from "../api/api.js";
@@ -17,6 +12,7 @@ import { MessageItemType, TypingStatus } from "../api/types.js";
 import { loadWeixinAccount } from "../auth/accounts.js";
 import { readFrameworkAllowFromList } from "../auth/pairing.js";
 import { downloadRemoteImageToTemp } from "../cdn/upload.js";
+import { resolveReplyProgressMessagesEnabled } from "../config/reply-progress.js";
 import { downloadMediaFromItem } from "../media/media-download.js";
 import { callbackRegistry } from "../providers/callback-registry.js";
 import type { ReplyProvider } from "../providers/types.js";
@@ -25,19 +21,30 @@ import { redactBody, redactToken } from "../util/redact.js";
 
 import { isDebugMode } from "./debug-mode.js";
 import { sendWeixinErrorNotice } from "./error-notice.js";
+import { applyWeixinMessageSendingHook, emitWeixinMessageSent } from "./outbound-hooks.js";
 import {
   setContextToken,
   weixinMessageToMsgContext,
   getContextTokenFromMsgContext,
+  getWeixinMessageId,
   isMediaItem,
+  resolveStoredQuoteContext,
 } from "./inbound.js";
 import type { WeixinInboundMediaOpts } from "./inbound.js";
 import { sendWeixinMediaFile } from "./send-media.js";
 import { StreamingMarkdownFilter } from "./markdown-filter.js";
 import { sendMessageWeixin } from "./send.js";
+import { WeixinReplyProgressSender } from "./reply-progress-sender.js";
+import { withPublishedModelRuntime } from "./dispatch-options.js";
+import { resolveWeixinInboundAuthorization } from "./authorization.js";
+import { loadTypingCallbacksFactory } from "./typing.js";
+import { getActiveQuoteMediaSubdir, getQuoteStore } from "./quote-store.js";
 import { handleSlashCommand } from "./slash-commands.js";
 
-const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
+const MEDIA_OUTBOUND_TEMP_DIR = path.join(
+  resolvePreferredOpenClawTmpDir(),
+  "weixin/media/outbound-temp",
+);
 
 /** Dependencies for processOneMessage, injected by the monitor loop. */
 export type ProcessMessageDeps = {
@@ -45,8 +52,8 @@ export type ProcessMessageDeps = {
   config: import("openclaw/plugin-sdk/core").OpenClawConfig;
   /**
    * OpenClaw channel runtime. Required for the default OpenClaw AI dispatch path.
-   * When `replyProvider` is set and this is undefined, the standalone path is used
-   * (no OpenClaw gateway required).
+   * Optional: absent in standalone mode (no OpenClaw gateway), where the
+   * `replyProvider` path below is used instead.
    */
   channelRuntime?: PluginRuntime["channel"];
   baseUrl: string;
@@ -56,9 +63,10 @@ export type ProcessMessageDeps = {
   log: (msg: string) => void;
   errLog: (m: string) => void;
   /**
-   * When set, the external provider is used to generate replies instead of the
-   * default OpenClaw agent pipeline (dispatchReplyFromConfig).
-   * Configure via channels.openclaw-weixin.provider in openclaw.json.
+   * Fork extension: external reply provider (REST or WebSocket). When set, replies
+   * are generated via this provider instead of the OpenClaw agent pipeline.
+   * Configure via channels.openclaw-weixin.provider (gateway mode) or the
+   * standalone server config (ilink-wechat.json).
    */
   replyProvider?: ReplyProvider;
 };
@@ -111,7 +119,7 @@ async function standaloneMediaSave(
 }
 
 // ---------------------------------------------------------------------------
-// External provider dispatch
+// External provider dispatch (fork extension, restored from 2.1.8 standalone)
 // ---------------------------------------------------------------------------
 
 /**
@@ -256,7 +264,29 @@ async function dispatchWithExternalProvider(
     return f.feed(replyText) + f.flush();
   })();
 
-  const sendOpts = { baseUrl: deps.baseUrl, token: deps.token, contextToken };
+  // Outbound message_sending hook (official 2.1.9+ parity for the provider path;
+  // no-ops in standalone mode where no gateway hook runner exists).
+  const runId = randomUUID();
+  const sendingResult = await applyWeixinMessageSendingHook({
+    to,
+    text: filteredText,
+    accountId: deps.accountId,
+    mediaUrl: replyMediaUrl || undefined,
+    runId,
+  });
+  if (sendingResult.cancelled) {
+    logger.info(`[external-provider] outbound cancelled by message_sending hook to=${to}`);
+    return;
+  }
+  const text = sendingResult.text;
+
+  const sendOpts = {
+    baseUrl: deps.baseUrl,
+    token: deps.token,
+    contextToken,
+    accountId: deps.accountId,
+    runId,
+  };
 
   try {
     if (replyMediaUrl) {
@@ -274,22 +304,33 @@ async function dispatchWithExternalProvider(
         logger.debug(`[external-provider] remote image downloaded to ${filePath}`);
       } else {
         logger.warn(`[external-provider] unrecognised mediaUrl scheme, falling back to text-only`);
-        await sendMessageWeixin({ to, text: filteredText, opts: sendOpts });
+        await sendMessageWeixin({ to, text, opts: sendOpts });
+        emitWeixinMessageSent({ to, content: text, success: true, accountId: deps.accountId, runId });
         return;
       }
       await sendWeixinMediaFile({
         filePath,
         to,
-        text: filteredText,
+        text,
         opts: sendOpts,
         cdnBaseUrl: deps.cdnBaseUrl,
       });
+      emitWeixinMessageSent({ to, content: text, success: true, accountId: deps.accountId, runId });
       logger.info(`[external-provider] media sent OK to=${to}`);
     } else {
-      await sendMessageWeixin({ to, text: filteredText, opts: sendOpts });
+      await sendMessageWeixin({ to, text, opts: sendOpts });
+      emitWeixinMessageSent({ to, content: text, success: true, accountId: deps.accountId, runId });
       logger.info(`[external-provider] text sent OK to=${to}`);
     }
   } catch (err) {
+    emitWeixinMessageSent({
+      to,
+      content: text,
+      success: false,
+      error: String(err),
+      accountId: deps.accountId,
+      runId,
+    });
     logger.error(`[external-provider] send FAILED to=${to} err=${String(err)}`);
     const errMsg = err instanceof Error ? err.message : String(err);
     await sendWeixinErrorNotice({
@@ -298,6 +339,7 @@ async function dispatchWithExternalProvider(
       message: `⚠️ 消息发送失败：${errMsg}`,
       baseUrl: deps.baseUrl,
       token: deps.token,
+      accountId: deps.accountId,
       errLog: deps.errLog,
     });
   }
@@ -325,19 +367,21 @@ export async function processOneMessage(
   const debugTs: Record<string, number> = { received: receivedAt };
 
   const textBody = extractTextBody(full.item_list);
-  logger.debug(
-    `[process] received: msgId=${full.message_id ?? "?"} seq=${full.seq ?? "?"} from=${full.from_user_id ?? "?"} bodyLen=${textBody.length} itemTypes=[${full.item_list?.map((i) => i.type).join(",") ?? "none"}]`,
-  );
   if (textBody.startsWith("/")) {
-    const slashResult = await handleSlashCommand(textBody, {
-      to: full.from_user_id ?? "",
-      contextToken: full.context_token,
-      baseUrl: deps.baseUrl,
-      token: deps.token,
-      accountId: deps.accountId,
-      log: deps.log,
-      errLog: deps.errLog,
-    }, receivedAt, full.create_time_ms);
+    const slashResult = await handleSlashCommand(
+      textBody,
+      {
+        to: full.from_user_id ?? "",
+        contextToken: full.context_token,
+        baseUrl: deps.baseUrl,
+        token: deps.token,
+        accountId: deps.accountId,
+        log: deps.log,
+        errLog: deps.errLog,
+      },
+      receivedAt,
+      full.create_time_ms,
+    );
     if (slashResult.handled) {
       logger.info(`[weixin] Slash command handled, skipping AI pipeline`);
       return;
@@ -389,25 +433,27 @@ export async function processOneMessage(
   const mediaItem = mainMediaItem ?? refMediaItem;
   if (mediaItem) {
     const label = refMediaItem ? "ref" : "inbound";
-    logger.debug(`[process] mediaItem found: type=${mediaItem.type} label=${label}`);
-    // Standalone mode uses a simple temp-dir save when channelRuntime is unavailable.
+    // Gateway mode uses the framework media store; standalone mode falls back to
+    // a plain temp-dir save (fork extension restored from 2.1.8).
     const saveMedia = deps.channelRuntime?.media.saveMediaBuffer ?? standaloneMediaSave;
     const downloaded = await downloadMediaFromItem(mediaItem, {
       cdnBaseUrl: deps.cdnBaseUrl,
       saveMedia,
+      mediaSubdir: getActiveQuoteMediaSubdir(deps.accountId),
       log: deps.log,
       errLog: deps.errLog,
       label,
     });
     Object.assign(mediaOpts, downloaded);
+    if (refMediaItem) mediaOpts.referencedMedia = true;
   }
   const mediaDownloadMs = Date.now() - mediaDownloadStart;
-  logger.debug(`[process] mediaDownload: found=${Boolean(mediaItem)} cost=${mediaDownloadMs}ms`);
 
   if (debug) {
-    debugTrace.push(mediaItem
-      ? `│ mediaDownload: type=${mediaItem.type} cost=${mediaDownloadMs}ms`
-      : "│ mediaDownload: none",
+    debugTrace.push(
+      mediaItem
+        ? `│ mediaDownload: type=${mediaItem.type} cost=${mediaDownloadMs}ms`
+        : "│ mediaDownload: none",
     );
   }
 
@@ -419,85 +465,84 @@ export async function processOneMessage(
 
   const senderId = full.from_user_id ?? "";
 
-  let senderAllowedForCommands: boolean;
-  let commandAuthorized: boolean;
+  let senderAllowed: boolean;
+  let commandAuthorized: boolean | undefined;
 
   if (deps.channelRuntime) {
-    // Full OpenClaw authorization pipeline (framework command auth + pairing).
-    ({ senderAllowedForCommands, commandAuthorized } =
-      await resolveSenderCommandAuthorizationWithRuntime({
-        cfg: deps.config,
-        rawBody,
-        isGroup: false,
-        dmPolicy: "pairing",
-        configuredAllowFrom: [],
-        configuredGroupAllowFrom: [],
-        senderId,
-        isSenderAllowed: (id: string, list: string[]) => list.length === 0 || list.includes(id),
-        /** Pairing: framework credentials `*-allowFrom.json`, with account `userId` fallback for legacy installs. */
-        readAllowFromStore: async () => {
-          const fromStore = readFrameworkAllowFromList(deps.accountId);
-          if (fromStore.length > 0) return fromStore;
-          const uid = loadWeixinAccount(deps.accountId)?.userId?.trim();
-          return uid ? [uid] : [];
-        },
-        runtime: deps.channelRuntime.commands,
-      }));
-
-    const directDmOutcome = resolveDirectDmAuthorizationOutcome({
-      isGroup: false,
-      dmPolicy: "pairing",
-      senderAllowedForCommands,
-    });
-
-    if (directDmOutcome === "disabled" || directDmOutcome === "unauthorized") {
-      logger.info(
-        `authorization: dropping message from=${senderId} outcome=${directDmOutcome}`,
-      );
-      return;
-    }
+    // Full OpenClaw authorization pipeline (framework ingress + pairing).
+    const fromStore = readFrameworkAllowFromList(deps.accountId);
+    const uid = loadWeixinAccount(deps.accountId)?.userId?.trim();
+    ({ senderAllowed, commandAuthorized } = await resolveWeixinInboundAuthorization({
+      accountId: deps.accountId,
+      senderId,
+      rawBody,
+      config: deps.config,
+      commands: deps.channelRuntime.commands,
+      allowFrom: fromStore.length > 0 ? fromStore : uid ? [uid] : [],
+    }));
   } else {
-    // Standalone mode: simple file-based allowFrom list (no OpenClaw runtime).
-    const allowFrom = readFrameworkAllowFromList(deps.accountId);
-    const fallbackUserId = loadWeixinAccount(deps.accountId)?.userId?.trim();
-    let effectiveList: string[];
-    if (allowFrom.length > 0) {
-      effectiveList = allowFrom;
-    } else if (fallbackUserId) {
-      effectiveList = [fallbackUserId];
-    } else {
-      effectiveList = [];
-    }
-    senderAllowedForCommands = effectiveList.length === 0 || effectiveList.includes(senderId);
-    commandAuthorized = senderAllowedForCommands;
-    if (!senderAllowedForCommands) {
-      logger.info(`standalone auth: dropping message from=${senderId} (not in allowFrom)`);
-      return;
-    }
+    // Standalone mode (fork extension): simple file-based allowFrom list.
+    const fromStore = readFrameworkAllowFromList(deps.accountId);
+    const uid = loadWeixinAccount(deps.accountId)?.userId?.trim();
+    const effectiveList = fromStore.length > 0 ? fromStore : uid ? [uid] : [];
+    senderAllowed = effectiveList.length === 0 || effectiveList.includes(senderId);
+    commandAuthorized = senderAllowed;
+  }
+
+  if (!senderAllowed) {
+    logger.info(
+      `authorization: dropping message from=${senderId} outcome=${deps.channelRuntime ? "unauthorized" : "standalone-not-in-allowFrom"}`,
+    );
+    return;
   }
 
   ctx.CommandAuthorized = commandAuthorized;
   logger.debug(
-    `authorization: senderId=${senderId} commandAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
+    `authorization: senderId=${senderId} commandAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowed)}`,
   );
 
-  // Always persist the context token regardless of dispatch path
+  if (debug) {
+    debugTrace.push(
+      "── 鉴权 & 路由 ──",
+      `│ auth: cmdAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowed)}`,
+    );
+  }
+
+  // Always persist the context token before any dispatch path (fork: needed by
+  // the external provider branch below; identical to upstream persist semantics).
   const contextToken = getContextTokenFromMsgContext(ctx);
   if (contextToken) {
     setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
   }
 
-  // -------------------------------------------------------------------------
-  // External provider path — bypasses OpenClaw route/session/dispatch
-  // -------------------------------------------------------------------------
-  if (deps.replyProvider) {
-    if (debug) {
-      debugTrace.push(
-        "── 鉴权 & 路由 ──",
-        `│ auth: cmdAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
-        `│ route: external provider=${deps.replyProvider.type}`,
+  resolveStoredQuoteContext(ctx, full, deps.accountId);
+  const inboundMessageId = getWeixinMessageId(full);
+  if (inboundMessageId) {
+    try {
+      await getQuoteStore()?.put({
+        accountId: deps.accountId,
+        conversationId: senderId,
+        messageId: inboundMessageId,
+        direction: "inbound",
+        body: ctx.Body,
+        ...(ctx.MediaPath ? { sourceMediaPath: ctx.MediaPath } : {}),
+        ...(ctx.MediaType ? { mediaMime: ctx.MediaType } : {}),
+        ...(mainMediaItem?.file_item?.file_name
+          ? { mediaName: mainMediaItem.file_item.file_name }
+          : {}),
+        createdAt: full.create_time_ms ?? Date.now(),
+      });
+    } catch (err) {
+      logger.warn(
+        `quote cache: failed to save inbound message id=${inboundMessageId}: ${String(err)}`,
       );
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // External provider path — bypasses OpenClaw route/session/dispatch (fork).
+  // -------------------------------------------------------------------------
+  if (deps.replyProvider) {
     await dispatchWithExternalProvider(full, deps, mediaOpts, contextToken);
     if (debug && contextToken) {
       const dispatchDoneAt = Date.now();
@@ -512,7 +557,7 @@ export async function processOneMessage(
         await sendMessageWeixin({
           to: full.from_user_id ?? "",
           text: `⏱ Debug 全链路\n${debugTrace.join("\n")}`,
-          opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken },
+          opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken, accountId: deps.accountId },
         });
       } catch (debugErr) {
         logger.error(`debug-timing: send FAILED err=${String(debugErr)}`);
@@ -532,13 +577,6 @@ export async function processOneMessage(
     return;
   }
 
-  if (debug) {
-    debugTrace.push(
-      "── 鉴权 & 路由 ──",
-      `│ auth: cmdAuthorized=${String(commandAuthorized)} senderAllowed=${String(senderAllowedForCommands)}`,
-    );
-  }
-
   const route = deps.channelRuntime.routing.resolveAgentRoute({
     cfg: deps.config,
     channel: "openclaw-weixin",
@@ -555,9 +593,7 @@ export async function processOneMessage(
   }
 
   if (debug) {
-    debugTrace.push(
-      `│ route: agent=${route.agentId ?? "none"} session=${route.sessionKey ?? "none"}`,
-    );
+    debugTrace.push(`│ route: agent=${route.agentId ?? "none"} session=${route.sessionKey ?? "none"}`);
     debugTs.preDispatch = Date.now();
   }
   // Propagate the resolved session key into ctx so dispatchReplyFromConfig uses
@@ -592,11 +628,24 @@ export async function processOneMessage(
     `recordInboundSession: done storePath=${storePath} sessionKey=${route.sessionKey ?? "(none)"}`,
   );
 
-  // contextToken was already obtained and persisted above, before the provider branch.
-  // Re-use it here for the OpenClaw path without re-declaring.
+  const runId = randomUUID();
+  const replyProgressSender = resolveReplyProgressMessagesEnabled(deps.config)
+    ? new WeixinReplyProgressSender({
+        runId,
+        to: ctx.To,
+        accountId: deps.accountId,
+        opts: {
+          baseUrl: deps.baseUrl,
+          token: deps.token,
+          contextToken,
+          accountId: deps.accountId,
+        },
+      })
+    : undefined;
   const humanDelay = deps.channelRuntime.reply.resolveHumanDelayConfig(deps.config, route.agentId);
 
   const hasTypingTicket = Boolean(deps.typingTicket);
+  const createTypingCallbacks = await loadTypingCallbacksFactory();
   const typingCallbacks = createTypingCallbacks({
     start: hasTypingTicket
       ? () =>
@@ -628,7 +677,8 @@ export async function processOneMessage(
   });
 
   /** Delivery records populated synchronously at deliver() entry, safe to read in finally. */
-  const debugDeliveries: Array<{ textLen: number; media: string; preview: string; ts: number }> = [];
+  const debugDeliveries: Array<{ textLen: number; media: string; preview: string; ts: number }> =
+    [];
 
   const { dispatcher, replyOptions, markDispatchIdle } =
     deps.channelRuntime.reply.createReplyDispatcherWithTyping({
@@ -636,7 +686,7 @@ export async function processOneMessage(
       typingCallbacks,
       deliver: async (payload) => {
         const rawText = payload.text ?? "";
-        const text = (() => {
+        let text = (() => {
           const f = new StreamingMarkdownFilter();
           return f.feed(rawText) + f.flush();
         })();
@@ -655,11 +705,23 @@ export async function processOneMessage(
           });
         }
 
+        const sendingResult = await applyWeixinMessageSendingHook({
+          to: ctx.To,
+          text,
+          accountId: deps.accountId,
+          mediaUrl,
+          runId,
+        });
+        if (sendingResult.cancelled) {
+          logger.info(`outbound: cancelled by message_sending hook to=${ctx.To}`);
+          return;
+        }
+        text = sendingResult.text;
+
         try {
           if (mediaUrl) {
             let filePath: string;
             if (!mediaUrl.includes("://") || mediaUrl.startsWith("file://")) {
-              // Local path: absolute, relative, or file:// URL
               if (mediaUrl.startsWith("file://")) {
                 filePath = new URL(mediaUrl).pathname;
               } else if (!path.isAbsolute(mediaUrl)) {
@@ -677,11 +739,24 @@ export async function processOneMessage(
               logger.warn(
                 `outbound: unrecognized mediaUrl scheme, sending text only mediaUrl=${mediaUrl.slice(0, 80)}`,
               );
-              await sendMessageWeixin({ to: ctx.To, text, opts: {
-                baseUrl: deps.baseUrl,
-                token: deps.token,
-                contextToken,
-              }});
+              await sendMessageWeixin({
+                to: ctx.To,
+                text,
+                opts: {
+                  baseUrl: deps.baseUrl,
+                  token: deps.token,
+                  contextToken,
+                  runId,
+                  accountId: deps.accountId,
+                },
+              });
+              emitWeixinMessageSent({
+                to: ctx.To,
+                content: text,
+                success: true,
+                accountId: deps.accountId,
+                runId,
+              });
               logger.info(`outbound: text sent to=${ctx.To}`);
               return;
             }
@@ -689,20 +764,54 @@ export async function processOneMessage(
               filePath,
               to: ctx.To,
               text,
-              opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken },
+              opts: {
+                baseUrl: deps.baseUrl,
+                token: deps.token,
+                contextToken,
+                runId,
+                accountId: deps.accountId,
+              },
               cdnBaseUrl: deps.cdnBaseUrl,
+            });
+            emitWeixinMessageSent({
+              to: ctx.To,
+              content: text,
+              success: true,
+              accountId: deps.accountId,
+              runId,
             });
             logger.info(`outbound: media sent OK to=${ctx.To}`);
           } else {
             logger.debug(`outbound: sending text message to=${ctx.To}`);
-            await sendMessageWeixin({ to: ctx.To, text, opts: {
-              baseUrl: deps.baseUrl,
-              token: deps.token,
-              contextToken,
-            }});
+            await sendMessageWeixin({
+              to: ctx.To,
+              text,
+              opts: {
+                baseUrl: deps.baseUrl,
+                token: deps.token,
+                contextToken,
+                runId,
+                accountId: deps.accountId,
+              },
+            });
+            emitWeixinMessageSent({
+              to: ctx.To,
+              content: text,
+              success: true,
+              accountId: deps.accountId,
+              runId,
+            });
             logger.info(`outbound: text sent OK to=${ctx.To}`);
           }
         } catch (err) {
+          emitWeixinMessageSent({
+            to: ctx.To,
+            content: text,
+            success: false,
+            error: String(err),
+            accountId: deps.accountId,
+            runId,
+          });
           logger.error(
             `outbound: FAILED to=${ctx.To} mediaUrl=${mediaUrl ?? "none"} err=${String(err)} stack=${(err as Error).stack ?? ""}`,
           );
@@ -730,6 +839,8 @@ export async function processOneMessage(
           message: notice,
           baseUrl: deps.baseUrl,
           token: deps.token,
+          runId,
+          accountId: deps.accountId,
           errLog: deps.errLog,
         });
       },
@@ -740,12 +851,18 @@ export async function processOneMessage(
     await deps.channelRuntime.reply.withReplyDispatcher({
       dispatcher,
       run: () =>
-        deps.channelRuntime.reply.dispatchReplyFromConfig({
-          ctx: finalized,
-          cfg: deps.config,
-          dispatcher,
-          replyOptions: { ...replyOptions, disableBlockStreaming: true },
-        }),
+        deps.channelRuntime!.reply.dispatchReplyFromConfig(
+          withPublishedModelRuntime({
+            ctx: finalized,
+            cfg: deps.config,
+            dispatcher,
+            replyOptions: {
+              ...replyOptions,
+              ...(replyProgressSender?.replyOptions ?? {}),
+              disableBlockStreaming: true,
+            },
+          }),
+        ),
     });
     logger.debug(`dispatchReplyFromConfig: done agentId=${route.agentId ?? "(none)"}`);
   } catch (err) {
@@ -755,6 +872,7 @@ export async function processOneMessage(
     throw err;
   } finally {
     markDispatchIdle();
+    await replyProgressSender?.finalize();
 
     logger.info(
       `debug-check: accountId=${deps.accountId} debug=${String(debug)} hasContextToken=${Boolean(contextToken)}`,
@@ -766,15 +884,13 @@ export async function processOneMessage(
       const platformDelay = eventTs > 0 ? `${receivedAt - eventTs}ms` : "N/A";
       const inboundProcessMs = (debugTs.preDispatch ?? receivedAt) - receivedAt;
       const aiMs = dispatchDoneAt - (debugTs.preDispatch ?? receivedAt);
-      const totalTime = eventTs > 0 ? `${dispatchDoneAt - eventTs}ms` : `${dispatchDoneAt - receivedAt}ms`;
+      const totalTime =
+        eventTs > 0 ? `${dispatchDoneAt - eventTs}ms` : `${dispatchDoneAt - receivedAt}ms`;
 
       if (debugDeliveries.length > 0) {
         debugTrace.push("── 回复 ──");
         for (const d of debugDeliveries) {
-          debugTrace.push(
-            `│ textLen=${d.textLen} media=${d.media}`,
-            `│ text="${d.preview}"`,
-          );
+          debugTrace.push(`│ textLen=${d.textLen} media=${d.media}`, `│ text="${d.preview}"`);
         }
         const firstTs = debugDeliveries[0].ts;
         debugTrace.push(`│ deliver耗时: ${dispatchDoneAt - firstTs}ms`);
@@ -798,7 +914,13 @@ export async function processOneMessage(
         await sendMessageWeixin({
           to: ctx.To,
           text: timingText,
-          opts: { baseUrl: deps.baseUrl, token: deps.token, contextToken },
+          opts: {
+            baseUrl: deps.baseUrl,
+            token: deps.token,
+            contextToken,
+            runId,
+            accountId: deps.accountId,
+          },
         });
         logger.info(`debug-timing: sent OK`);
       } catch (debugErr) {
