@@ -35,6 +35,7 @@ import path from "node:path";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-id";
 
 import { loadWeixinAccount, listIndexedWeixinAccountIds, saveWeixinAccount, registerWeixinAccountId, clearStaleAccountsForUserId, DEFAULT_BASE_URL, CDN_BASE_URL } from "../auth/accounts.js";
+import { notifyStart, notifyStop } from "../api/api.js";
 import { clearContextTokensForAccount } from "../messaging/inbound.js";
 import { startWeixinLoginWithQr, waitForWeixinLogin, DEFAULT_ILINK_BOT_TYPE } from "../auth/login-qr.js";
 import { createReplyProvider } from "../providers/index.js";
@@ -250,6 +251,12 @@ async function runLogin(): Promise<void> {
     print(`\n下一步：运行以下命令启动机器人：`);
     print(`  npm run serve\n`);
     print(`  (或: node dist/src/server/index.js start)\n`);
+  } else if ((waitResult as { alreadyConnected?: boolean }).alreadyConnected) {
+    // binded_redirect: the scanned bot is already bound to this instance and the
+    // existing local credentials remain valid — treat as success (official 2.4.3 fix).
+    print(`\n✅ ${waitResult.message}`);
+    print(`\n下一步：运行以下命令启动机器人：`);
+    print(`  npm run serve\n`);
   } else {
     printError(`登录失败：${waitResult.message}`);
     process.exit(1);
@@ -309,11 +316,25 @@ async function runStart(): Promise<void> {
   const ac = new AbortController();
   const shutdown = (): void => {
     print(`\n[ilink-wechat] Shutting down...`);
+    // Notify the upstream weixin service that this bot is going offline (official 2.3.1+).
+    void notifyStop({ baseUrl, token }).catch((err) =>
+      printError(`notifyStop failed during shutdown (ignored): ${String(err)}`),
+    );
     ac.abort();
     callbackHandle?.close().catch(() => undefined);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+
+  // Notify the upstream weixin service that this bot is online (official 2.3.1+).
+  try {
+    const resp = await notifyStart({ baseUrl, token });
+    if (resp.ret !== undefined && resp.ret !== 0) {
+      printError(`notifyStart: ret=${resp.ret} errmsg=${resp.errmsg ?? ""}`);
+    }
+  } catch (err) {
+    printError(`notifyStart failed during startup (ignored): ${String(err)}`);
+  }
 
   await runStandaloneMonitor({
     baseUrl,

@@ -6,6 +6,19 @@
 /** Common request metadata attached to every CGI request. */
 export interface BaseInfo {
   channel_version?: string;
+  /**
+   * Self-declared identity of the upstream bot/app, analogous to HTTP
+   * `User-Agent`. Filled from `channels.openclaw-weixin.botAgent` in
+   * openclaw.json; defaults to `"OpenClaw"` when unset.
+   *
+   * Format: UA-style `Name/Version` tokens, optionally followed by
+   * `(comment)`, multiple tokens space-separated. ASCII only, total
+   * length <= 256 bytes after sanitization.
+   *
+   * For observability only (logging, monitoring aggregation); not used
+   * for authentication or routing.
+   */
+  bot_agent?: string;
 }
 
 /** proto: UploadMediaType */
@@ -61,6 +74,8 @@ export const MessageItemType = {
   VOICE: 3,
   FILE: 4,
   VIDEO: 5,
+  TOOL_CALL_START: 11,
+  TOOL_CALL_RESULT: 12,
 } as const;
 
 export const MessageState = {
@@ -132,6 +147,29 @@ export interface VideoItem {
 export interface RefMessage {
   message_item?: MessageItem;
   title?: string; // 摘要
+  /** Server message ID used when newer clients omit the quoted content. */
+  svr_id?: string;
+  /** Optional metadata describing a selected substring of the quoted message. */
+  partial_text?: PartialText;
+}
+
+export interface PartialText {
+  start: string;
+  end: string;
+  startindex: number;
+  endindex: number;
+  quotemd5: string;
+}
+
+export interface ToolCallStartItem {
+  tool_name?: string;
+  tool_call_id?: string;
+}
+
+export interface ToolCallResultItem {
+  tool_name?: string;
+  tool_call_id?: string;
+  status?: string;
 }
 
 export interface MessageItem {
@@ -146,12 +184,15 @@ export interface MessageItem {
   voice_item?: VoiceItem;
   file_item?: FileItem;
   video_item?: VideoItem;
+  tool_call_start_item?: ToolCallStartItem;
+  tool_call_result_item?: ToolCallResultItem;
 }
 
 /** Unified message (proto: WeixinMessage). Replaces the old split Message + MessageContent + FullMessage. */
 export interface WeixinMessage {
   seq?: number;
-  message_id?: number;
+  /** uint64 on the wire; parsed losslessly as a string. */
+  message_id?: string;
   from_user_id?: string;
   to_user_id?: string;
   client_id?: string;
@@ -164,6 +205,7 @@ export interface WeixinMessage {
   message_state?: number;
   item_list?: MessageItem[];
   context_token?: string;
+  run_id?: string;
 }
 
 /** GetUpdates request: bytes fields are base64 strings in JSON. */
@@ -195,7 +237,10 @@ export interface SendMessageReq {
 }
 
 export interface SendMessageResp {
-  // empty
+  /** uint64 on the wire; parsed losslessly as a string. */
+  message_id?: string;
+  ret?: number;
+  errmsg?: string;
 }
 
 /** Typing status: 1 = typing (default), 2 = cancel typing. */
@@ -223,4 +268,26 @@ export interface GetConfigResp {
   errmsg?: string;
   /** Base64-encoded typing ticket for sendTyping. */
   typing_ticket?: string;
+}
+
+/** proto: NotifyStopReq — notify server when the channel client is stopping. */
+export interface NotifyStopReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStopResp */
+export interface NotifyStopResp {
+  ret?: number;
+  errmsg?: string;
+}
+
+/** proto: NotifyStartReq — notify server when the channel client is starting. */
+export interface NotifyStartReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStartResp */
+export interface NotifyStartResp {
+  ret?: number;
+  errmsg?: string;
 }
